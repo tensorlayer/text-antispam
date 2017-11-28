@@ -14,7 +14,7 @@ import tensorlayer as tl
 wv = tl.files.load_npy_to_any(name='./output/model_word2vec_200.npy')
 for label in ["pass", "spam"]:
     embeddings = []
-    inp = "data/postlog/post" + label + ".log.seg"
+    inp = "data/msglog/msg" + label + ".log.seg"
     outp = "output/sample_" + label
     f = open(inp)
     for line in f:

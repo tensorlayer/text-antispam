@@ -25,13 +25,14 @@ def load_dataset():
     Returns:
         [得 我 就 在 车里 咪 一会 终于 知道 哪里 感觉 不 对 了...]
     """
-    if not os.path.exists('data/postlog'):
+    prj = "https://github.com/pakrchen/text-antispam"
+    if not os.path.exists('data/msglog'):
         tl.files.maybe_download_and_extract(
-            'postlog.tar.gz',
+            'msglog.tar.gz',
             'data',
-            'https://github.com/pakrchen/text-antispam/raw/master/word2vec/data/')
-        tarfile.open('data/postlog.tar.gz', 'r').extractall('data')
-    files = ['data/postlog/postpass.log.seg', 'data/postlog/postspam.log.seg']
+            prj + '/raw/master/word2vec/data/')
+        tarfile.open('data/msglog.tar.gz', 'r').extractall('data')
+    files = ['data/msglog/msgpass.log.seg', 'data/msglog/msgspam.log.seg']
     words = []
     for file in files:
         f = open(file)
