@@ -46,7 +46,7 @@ at 0.0.0.0:9000 ...
 
 TensorFlow Serving通过gRPC框架接收外部调用。gRPC是一种高性能、通用的远程过程调用（Remote Procedure Call，RPC）框架。RPC协议包含了编码协议和传输协议。gRPC的编码协议是Protocol Buffers（ProtoBuf），它是Google开发的一种二进制格式数据描述语言，支持众多开发语言和平台。与JSON、XML相比，ProtoBuf的优点是体积小、速度快，其序列化与反序列化代码都是通过代码生成器根据定义好的数据结构生成的，使用起来也很简单。gRPC的传输协议是HTTP/2，相比于HTTP/1.1，HTTP/2引入了头部压缩算法（HPACK）等新特性，并采用了二进制而非明文来打包、传输客户端——服务器间的数据，性能更好，功能更强。总而言之，gRPC提供了一种简单的方法来精确地定义服务，并自动为客户端生成可靠性很强的功能库，如图7所示。
 
-在使用gRPC进行通信之前，我们需要完成两步操作：1）定义服务；2）生成服务端和客户端代码。定义服务这块工作TensorFlow Serving已经帮我们完成了。在TensorFlow Serving（https://github.com/tensorflow/serving）项目中，我们可以在以下目录找到三个`.proto`文件：`model.proto`、`predict.proto`和`prediction_service.proto`。这三个`.proto`文件定义了一次预测请求的输入和输出。例如一次预测请求应该包含哪些元数据（如模型的名称和版本），以及输入、输出与Tensor如何转换。
+在使用gRPC进行通信之前，我们需要完成两步操作：1）定义服务；2）生成服务端和客户端代码。定义服务这块工作TensorFlow Serving已经帮我们完成了。在[TensorFlow Serving](https://github.com/tensorflow/serving)项目中，我们可以在以下目录找到三个`.proto`文件：`model.proto`、`predict.proto`和`prediction_service.proto`。这三个`.proto`文件定义了一次预测请求的输入和输出。例如一次预测请求应该包含哪些元数据（如模型的名称和版本），以及输入、输出与Tensor如何转换。
 
 <div align="center">
 <img src="../images/7-gRPC-color.png">
