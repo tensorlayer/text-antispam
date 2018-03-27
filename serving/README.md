@@ -15,8 +15,7 @@
 
 TensorFlow Serving的编译依赖Google的开源编译工具Bazel。具体的安装可以参考[官方文档](https://docs.bazel.build/versions/master/install-compile-source.html)。
 
-部署的方式非常简单，只需在启动TensorFlow Serving时加载Servable并定义`mo
-del_name`即可，这里的`model_name`将用于与客户端进行交互。
+部署的方式非常简单，只需在启动TensorFlow Serving时加载Servable并定义`model_name`即可，这里的`model_name`将用于与客户端进行交互。
 
 ```
 $ ./tensorflow_model_server --port=9000 --model_base_path=./model --
@@ -89,8 +88,7 @@ prediction_service.proto: import "tensorflow_serving/apis/predict.proto"
 ```
 
 
-删去没有用到的RPC定义`service (Classify, Regress, GetModelMetadata)`和引入`import (classification.proto, get_model_metadata.proto, regress
-ion.proto)`。最后使用`grpcio-tools`生成功能库。
+删去没有用到的RPC定义`service (Classify, Regress, GetModelMetadata)`和引入`import (classification.proto, get_model_metadata.proto, regression.proto)`。最后使用`grpcio-tools`生成功能库。
 
 ```
 $ pip install grpcio
