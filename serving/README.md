@@ -109,7 +109,7 @@ prediction_service_pb2.py
 prediction_service_pb2_grpc.py
 ```
 
-其中`model\_pb2.py`、`predict\_pb2.py`和`prediction\_service\_pb2.py`是Python与TensorFlow Serving交互所必需的功能库。
+其中`model_pb2.py`、`predict_pb2.py`和`prediction_service_pb2.py`是Python与TensorFlow Serving交互所必需的功能库。
 
 接下来写一个简单的客户端程序来调用部署好的模型。`engine.py`负责构建一个Request用于与TensorFlow Serving交互。为了描述简洁，这里分词使用了结巴分词，词向量也是直接载入内存，实际生产环境中分词与词向量获取是一个单独的服务。特别需要注意的是，输入的签名和数据必须与之前导出的模型相匹配，如图8所示。
 
