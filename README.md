@@ -42,7 +42,7 @@ RNN常用于处理时间序列数据，它能够接受任意长度的输入，�
 准确率都能达到97%以上。如图1所示，相比之前训练的SVM分类器所达到的93%左右的准确率，基于神经网络的垃圾文本分类器表现出非常优秀的性能。
 
 <div align="center">
-<img src="../images/1-Word2vec_and_Dynamic_RNN-color.png">
+<img src="./images/1-Word2vec_and_Dynamic_RNN-color.png">
 <br>
 <em align="center">图1 Word2vec与Dynamic RNN</em>
 </div>
@@ -54,7 +54,7 @@ RNN常用于处理时间序列数据，它能够接受任意长度的输入，�
 比较有代表性的Word2vec模型有CBOW模型和Skip-Gram模型，两种模型的数学推导过程见第5章的5.2节。图2演示了Skip-Gram模型的训练过程。假设我们的窗口取1，通过滑动窗口我们得到`(fox, brown)`、`(fox, jumps)`等输入输出对，经过足够多次的迭代后，当我们再次输入`fox`时，`jumps`和`brown`的概率会明显高于其他词。在输入层与隐层之间的矩阵`W1`存储着每一个单词的词向量，从输入层到隐层之间的计算就是取出单词的词向量。因为训练的目标是相似词得到相似上下文，所以相似词在隐层的输出（即其词向量）在优化过程中会越来越接近。训练完成后我们把`W1`（词向量集合）保存起来用于后续的任务。
 
 <div align="center">
-<img src="../images/2-Word2vec-color.png">
+<img src="./images/2-Word2vec-color.png">
 <br>
 <em align="center">图2 Word2vec训练过程</em>
 </div>
@@ -68,7 +68,7 @@ RNN常用于处理时间序列数据，它能够接受任意长度的输入，�
 图3演示了Dynamic RNN分类器的训练过程，Sequence 1、2、3作为一个Batch输入到网络中，这个Batch最长的长度是6，因此左方RNN Graph展开后如右方所示是一个有着6个隐层的网络，每一层的输出会和下一个词一起作为输入进入到下一层。第1个序列的长度为6，因此我们取第6个输出作为这个序列的Embedding输入到Softmax层进行分类。第2个序列的长度为3，因此我们在计算到第3个输出时就停止计算，取第3个输出作为这个序列的Embedding输入到Softmax层进行后续的计算。依此类推，第3个序列取第5个输出作为Softmax层的输入，完成一次前向与后向传播。
 
 <div align="center">
-<img src="../images/3-Dynamic_RNN-color.png">
+<img src="./images/3-Dynamic_RNN-color.png">
 <br>
 <em align="center">图3 Dynamic RNN训练过程</em>
 </div>
