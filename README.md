@@ -23,11 +23,11 @@
 
 在这个实例中，我们将使用TensorLayer来训练一个垃圾文本分类器，并介绍如何通过TensorFlow Serving来提供高性能服务，实现产品化部署。这个分类器将解决以上几个难题，我们不再担心垃圾文本有多么隐晦，也不再关心它们用的哪国语言或有多少种联系方式。
 
-第一步，训练词向量，相关代码在word2vec文件夹，执行步骤见word2vec/README.md。
+第一步，[训练词向量](https://github.com/pakrchen/text-antispam/tree/master/word2vec)，相关代码在word2vec文件夹，执行步骤见word2vec/README.md。
 
-第二步，训练分类器，相关代码在network文件夹，执行步骤见network/README.md。
+第二步，[训练分类器](https://github.com/pakrchen/text-antispam/tree/master/network)，相关代码在network文件夹，执行步骤见network/README.md。
 
-第三步，与TensorFlow Serving交互，客户端代码在serving文件夹。
+第三步，[与TensorFlow Serving交互](https://github.com/pakrchen/text-antispam/tree/master/serving)，客户端代码在serving文件夹。
 
 ### 网络结构
 
