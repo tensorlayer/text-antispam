@@ -28,7 +28,7 @@ python3 cnn_classifier.py --mode=export
 由于词向量之间存在着线性平移的关系，如果相似词空间距离相近，那么在仅仅将文本中一个或几个词改成近义词的情况下，两个文本的词向量线性相加的结果也应该是非常接近的。
 
 <div align="center">
-<img src="../images/9-xxx-color.png">
+<img src="../images/9-NBOW_and_MLP_Classifier-color.png">
 <br>
 <em align="center">图9 NBOW+MLP分类器</em>
 </div>
@@ -65,7 +65,7 @@ def network(x, keep=0.8):
 CNN卷积的过程捕捉了文本的局部相关性，在文本分类中也取得了不错的结果。图10演示了CNN分类过程。输入是一个由6维词向量组成的最大长度为11的文本，经过与4个3×6的卷积核进行卷积，得到4张9维的特征图。再对特征图每3块不重合区域进行最大池化，将结果合成一个12维的向量输入到全连接层。
 
 <div align="center">
-<img src="../images/10-xxx-color.png">
+<img src="../images/10-CNN_Classifier-color.png">
 <br>
 <em align="center">图10 CNN分类器</em>
 </div>
