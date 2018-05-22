@@ -21,7 +21,7 @@ python3 cnn_classifier.py
 python3 cnn_classifier.py --mode=export
 ```
 
-### 训练分类器
+#### 训练分类器
 
 我们使用Dynamic RNN实现不定长文本序列分类。首先加载数据，通过`sklearn`库的`train_test_split`方法将样本按照要求的比例切分成训练集和测试集。
 
@@ -192,7 +192,7 @@ def train(sess, x, network):
                              time.time() - start_time)
                 loss = sess.run(cost, feed_dict=feed_dict)
                 acc  = sess.run(accuracy, feed_dict=feed_dict)
-                logging.info("Minibatch Loss= " + "{:.6f}".format(loss) +
+#                logging.info("Minibatch Loss= " + "{:.6f}".format(loss) +
                              ", Training Accuracy= " + "{:.5f}".format(acc))
                 save_checkpoint(sess, ckpt_file)
 
@@ -207,7 +207,7 @@ def train(sess, x, network):
 <em align="center">图5 使用TensorBoard监控Loss和Accuracy</em>
 </div>
 
-### 模型导出
+#### 模型导出
 
 TensorFlow的SavedModel模块`tensorflow.python.saved_model`提供了一种跨语言格式来保存和恢复训练后的TensorFlow模型。它使用方法签名来定义Graph的输入和输出，使上层系统能够更方便地生成、调用或转换TensorFlow模型。SavedModelBuilder类提供保存Graphs、Variables及Assets的方法。所保存的Graphs必须标注用途标签。在这个实例中我们打算将模型用于服务而非训练，因此我们用SavedModel预定义好`tag_constant.Serving`标签。
 
