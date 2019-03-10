@@ -69,6 +69,13 @@ serving
 ├── ...
 ```
 
+*在写这篇文章的时候，TensorFlow Serving还没有官方的pip包用以供python调用其gRPC API，但是现在已经有了，大家可以通过以下命令很方便地安装TensorFLow Serving Python客户端代码。通过这种方式安装可以忽略以下生成Python功能库的复杂流程。*
+
+```
+pip install tensorflow-serving-api
+```
+
+*另外TensorFlow Serving也提供了RESTful API调用方式，虽然实测性能略低于gRPC API，但是部署起来方便很多。具体使用方式建议参考这篇[RESTful API](https://www.tensorflow.org/tfx/serving/api_rest)*
 
 接下来需要生成Python可以直接调用的功能库。首先将这三个文件复制到`serving/
 tensorflow`目录下:
