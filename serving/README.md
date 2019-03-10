@@ -14,7 +14,7 @@
 为什么使用TensorFlow Serving而不是直接启动多个加载了模型的Python进程来提供线上服务？因为重复引入TensorFlow并加载模型的Python进程浪费资源并且运行效率不高。而且TensorFlow本身有一些限制导致并不是所有时候都能启动多个进程。TensorFlow默认会使用尽可能多的GPU并且占用所使用的GPU。因此如果有一个TensorFlow进程正在运行，可能导致其他TensorFlow进程无法启动。虽然可以指定程序使用特定的GPU，但是进程的数量也受到GPU数量的限制，总体来说不利于分布式部署。而TensorFlow Serving提供了一个高效的分布式解决方案。当新数据可用或改进模型时，加载并迭代模型是很常见的。TensorFlow Serving能够实现模型生命周期管理，它能自动检测并加载最新模型或回退到上一个模型，非常适用于高频迭代场景。
 
 
-~~TensorFlow Serving的编译依赖Google的开源编译工具Bazel。具体的安装可以参考[官方文档](https://docs.bazel.build/versions/master/install-compile-source.html)~~。**现在通过Docker使用Tensorflow Serving已经非常方便了，建议大家直接参考[TensorFlow Serving with Docker](https://www.tensorflow.org/tfx/serving/docker)这篇文档安装TensorFlow Serving。**
+~~TensorFlow Serving的编译依赖Google的开源编译工具Bazel。具体的安装可以参考[官方文档](https://docs.bazel.build/versions/master/install-compile-source.html)~~。*现在通过Docker使用Tensorflow Serving已经非常方便了，建议大家直接参考[TensorFlow Serving with Docker](https://www.tensorflow.org/tfx/serving/docker)这篇文档安装TensorFlow Serving。*
 
 部署的方式非常简单，只需在启动TensorFlow Serving时加载Servable并定义`model_name`即可，这里的`model_name`将用于与客户端进行交互。
 
