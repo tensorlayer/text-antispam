@@ -90,6 +90,7 @@ ENV/
 # custom
 .DS_Store
 checkpoint/
+weights/
 cnn_checkpoint/
 rnn_checkpoint/
 mlp_checkpoint/

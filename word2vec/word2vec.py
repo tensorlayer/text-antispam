@@ -62,34 +62,28 @@ def get_vocabulary_size(words, min_freq=3):
     return size
 
 
-def save_checkpoint(ckpt_file_path):
+def save_weights(model, weights_file_path):
     """保存模型训练状态
     将会产生以下文件:
-        checkpoint
-        model_name.ckpt.data-?????-of-?????
-        model_name.ckpt.index
-        model_name.ckpt.meta
+        weights/model_word2vec_200.hdf5
     Args:
-        ckpt_file_path: 储存训练状态的文件路径
+        weights_file_path: 储存训练状态的文件路径
     """
-    path = os.path.dirname(os.path.abspath(ckpt_file_path))
+    path = os.path.dirname(os.path.abspath(weights_file_path))
     if os.path.isdir(path) == False:
         logging.warning('Path (%s) not exists, making directories...', path)
         os.makedirs(path)
-    tf.train.Saver().save(sess, ckpt_file_path+'.ckpt')
+    model.save_weights(filepath=weights_file_path)
 
 
-def load_checkpoint(ckpt_file_path):
+def load_weights(model, weights_file_path):
     """恢复模型训练状态
-    默认TensorFlow Session将从ckpt_file_path.ckpt中恢复所保存的训练状态
+    从weights_file_path中恢复所保存的训练状态
     Args:
-        ckpt_file_path: 储存训练状态的文件路径
+        weights_file_path: 储存训练状态的文件路径
     """
-    ckpt  = ckpt_file_path + '.ckpt'
-    index = ckpt + ".index"
-    meta  = ckpt + ".meta"
-    if os.path.isfile(index) and os.path.isfile(meta):
-        tf.train.Saver().restore(sess, ckpt)
+    if os.path.isfile(weights_file_path):
+        model.load_weights(filepath=weights_file_path)
 
 
 def save_embedding(dictionary, network, embedding_file_path):
@@ -108,7 +102,8 @@ def save_embedding(dictionary, network, embedding_file_path):
     """
     words, ids = zip(*dictionary.items())
     params = network.normalized_embeddings
-    embeddings = tf.nn.embedding_lookup(params, tf.constant(ids, dtype=tf.int32)).eval()
+    embeddings = tf.nn.embedding_lookup(params, tf.constant(ids, dtype=tf.int32))
+    #embeddings = tf.nn.embedding_lookup(params, tf.constant(ids, dtype=tf.int32)).eval()
     wv = dict(zip(words, embeddings))
     path = os.path.dirname(os.path.abspath(embedding_file_path))
     if os.path.isdir(path) == False:
@@ -136,42 +131,48 @@ def train(model_name):
     skip_window     = 5    # 上下文窗口，单词前后各取五个词
     num_skips       = 10   # 从窗口中选取多少个预测对
     num_sampled     = 64   # 负采样个数
-    learning_rate   = 0.1  # 学习率
+    learning_rate   = 0.025  # 学习率
     n_epoch         = 50   # 所有样本重复训练50次
     num_steps       = int((data_size/batch_size) * n_epoch) # 总迭代次数
 
-    data, count, dictionary, reverse_dictionary = \
-        tl.nlp.build_words_dataset(words, vocabulary_size)
-    train_inputs = tf.placeholder(tf.int32, shape=[batch_size])
-    train_labels = tf.placeholder(tf.int32, shape=[batch_size, 1])
+    data, count, dictionary, reverse_dictionary = tl.nlp.build_words_dataset(words, vocabulary_size)
+    train_inputs = tl.layers.Input([batch_size], dtype=tf.int32)
+    train_labels = tl.layers.Input([batch_size, 1], dtype=tf.int32)
 
-    with tf.device('/cpu:0'):
-        emb_net = tl.layers.Word2vecEmbeddingInputlayer(
-            inputs          = train_inputs,
-            train_labels    = train_labels,
-            vocabulary_size = vocabulary_size,
-            embedding_size  = embedding_size,
-            num_sampled     = num_sampled)
-        loss = emb_net.nce_cost
-        optimizer = tf.train.GradientDescentOptimizer(learning_rate).minimize(loss)
+    emb_net = tl.layers.Word2vecEmbedding(
+        vocabulary_size   = vocabulary_size,
+        embedding_size    = embedding_size,
+        num_sampled       = num_sampled,
+        activate_nce_loss = True,
+        nce_loss_args     = {})
 
-    sess.run(tf.global_variables_initializer())
-    ckpt_file_path = "checkpoint/" + model_name
-    load_checkpoint(ckpt_file_path)
+    emb, nce = emb_net([train_inputs, train_labels])
+    model = tl.models.Model(inputs=[train_inputs, train_labels], outputs=[emb, nce])
+    optimizer = tf.optimizers.Adagrad(learning_rate, initial_accumulator_value=0.1)
 
-    step = data_index = 0
+    # Start training
+    model.train()
+    weights_file_path = "weights/" + model_name + ".hdf5"
+    load_weights(model, weights_file_path)
+
     loss_vals = []
+    step = data_index = 0
+    print_freq = 200
     while (step < num_steps):
         batch_inputs, batch_labels, data_index = tl.nlp.generate_skip_gram_batch(
             data=data, batch_size=batch_size, num_skips=num_skips,
             skip_window=skip_window, data_index=data_index)
-        feed_dict = {train_inputs : batch_inputs, train_labels : batch_labels}
-        _, loss_val = sess.run([optimizer, loss], feed_dict=feed_dict)
+
+        with tf.GradientTape() as tape:
+            _, loss_val = model([batch_inputs, batch_labels])
+        grad = tape.gradient(loss_val, model.trainable_weights)
+        optimizer.apply_gradients(zip(grad, model.trainable_weights))
+
         loss_vals.append(loss_val)
-        if (step != 0) and (step % 200) == 0:
+        if step % print_freq == 0:
             logging.info("(%d/%d) latest average loss: %f.", step, num_steps, sum(loss_vals)/len(loss_vals))
             del loss_vals[:]
-            save_checkpoint(ckpt_file_path)
+            save_weights(model, weights_file_path)
             embedding_file_path = "output/" + model_name
             save_embedding(dictionary, emb_net, embedding_file_path)
         step += 1
@@ -181,6 +182,4 @@ if __name__ == '__main__':
     fmt = "%(asctime)s %(levelname)s %(message)s"
     logging.basicConfig(format=fmt, level=logging.INFO)
 
-    sess = tf.InteractiveSession() # 默认TensorFlow Session
     train('model_word2vec_200')
-    sess.close()
