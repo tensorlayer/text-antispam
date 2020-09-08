@@ -1,43 +1,120 @@
-### 训练RNN分类器以及导出Servable
+### 训练RNN分类器并导出Servable
 
 ```
 python3 rnn_classifier.py
-python3 rnn_classifier.py --mode=export
 ```
 
-执行`tensorboard --logdir=logs`可以观察loss与accuracy曲线
 
-### 训练MLP分类器以及导出Servable
+### 训练MLP分类器并导出Servable
 
 ```
 python3 mlp_classifier.py
-python3 mlp_classifier.py --mode=export
 ```
 
-### 训练CNN分类器以及导出Servable
+### 训练CNN分类器并导出Servable
 
 ```
 python3 cnn_classifier.py
-python3 cnn_classifier.py --mode=export
 ```
+#### 模型构建
+ 为了防止过拟合，我们在全连接层加了Dropout操作。参数keep决定了某一层神经元输出保留的比例。通过配置keep我们可以在训练的时候打开Dropout，在测试的时候关闭它。TensorFlow的tf.nn.dropout操作会自动根据keep调整激活的神经元的输出权重，使得我们无需在keep改变时手动调节输出权重。
+##### RNN分类器
+图4演示了Dynamic RNN分类器的训练过程，Sequence 1、2、3作为一个Batch输入到网络中，这个Batch最长的长度是6，因此左方RNN Graph展开后如右方所示是一个有着6个隐层的网络，每一层的输出会和下一个词一起作为输入进入到下一层。第1个序列的长度为6，因此我们取第6个输出作为这个序列的Embedding输入到Softmax层进行分类。第2个序列的长度为3，因此我们在计算到第3个输出时就停止计算，取第3个输出作为这个序列的Embedding输入到Softmax层进行后续的计算。依此类推，第3个序列取第5个输出作为Softmax层的输入，完成一次前向与后向传播。
+
+<div align="center">
+<img src="../images/3-Dynamic_RNN-color.png">
+<br>
+<em align="center">图4 Dynamic RNN训练过程</em>
+</div>
+```python
+def get_model(inputs_shape):
+    """定义网络结构
+    Args:
+        inputs_shape: 输入数据的shape
+        keep: 各层神经元激活比例
+            keep=1.0: 关闭Dropout
+    Returns:
+        model: 定义好的模型
+    """
+    ni = tl.layers.Input(inputs_shape, name='input_layer')
+    out = tl.layers.RNN(cell=tf.keras.layers.LSTMCell(units=64, recurrent_dropout=0.2), return_last_output=True, return_last_state=False, return_seq_2d=True)(ni, sequence_length=tl.layers.retrieve_seq_length_op3(ni, pad_val=masking_val))
+    nn = tl.layers.Dense(n_units=2, act=tf.nn.softmax, name="dense")(out)
+
+    model = tl.models.Model(inputs=ni, outputs=nn, name='rnn')
+    return model
+```
+
+##### MLP分类器
+前文提到过，分类器还可以用NBOW+MLP（如图5所示）和CNN来实现。借助TensorLayer，我们可以很方便地重组网络。下面简单介绍这两种网络的结构及其实现。
+
+由于词向量之间存在着线性平移的关系，如果相似词空间距离相近，那么在仅仅将文本中一个或几个词改成近义词的情况下，两个文本的词向量线性相加的结果也应该是非常接近的。
+
+<div align="center">
+<img src="../images/9-NBOW_and_MLP_Classifier-color.png">
+<br>
+<em align="center">图5 NBOW+MLP分类器</em>
+</div>
+
+多层神经网络可以无限逼近任意函数，能够胜任复杂的非线性分类任务。下面的代码将Word2vec训练好的词向量线性相加，再通过三层全连接网络进行分类。
+```python
+def get_model(input_shape, keep=0.5):
+    """定义网络结构
+
+    Args:
+        inputs_shape: 输入数据的shape
+        keep: 各层神经元激活比例
+            keep=1.0: 关闭Dropout
+    Returns:
+        model: 定义好的网络结构
+    """
+    ni = tl.layers.Input(input_shape, name='input_layer')
+    nn = tl.layers.Dropout(keep=keep, name='drop1')(ni)
+    nn = tl.layers.Dense(n_units=200, act=tf.nn.relu, name='relu1')(nn)
+    nn = tl.layers.Dropout(keep=keep, name='drop2')(nn)
+    nn = tl.layers.Dense(n_units=200, act=tf.nn.relu, name='relu2')(nn)
+    nn = tl.layers.Dropout(keep=keep, name='drop3')(nn)
+    nn = tl.layers.Dense(n_units=2, act=tf.nn.relu, name='output_layer')(nn)
+    model = tl.models.Model(inputs=ni, outputs=nn, name='mlp')
+    return model
+```
+##### CNN分类器
+CNN卷积的过程捕捉了文本的局部相关性，在文本分类中也取得了不错的结果。图6演示了CNN分类过程。输入是一个由6维词向量组成的最大长度为11的文本，经过与4个3×6的卷积核进行卷积，得到4张9维的特征图。再对特征图每3块不重合区域进行最大池化，将结果合成一个12维的向量输入到全连接层。
+
+<div align="center">
+<img src="../images/10-CNN_Classifier-color.png">
+<br>
+<em align="center">图6 CNN分类器</em>
+</div>
+
+下面代码中输入是一个由200维词向量组成的最大长度为20的文本（确定好文本的最大长度后，我们需要对输入进行截取或者填充）。卷积层参数[3, 200, 6]代表6个3×200的卷积核。这里使用1D CNN，是因为我们把文本序列看成一维数据，这意味着卷积的过程只会朝一个方向进行（同理，处理图片和小视频分别需要使用2D CNN和3D CNN）。卷积核宽度被设置为和词向量大小一致，确保了词向量作为最基本的元素不会被破坏。我们选取连续的3维作为池化区域，滑动步长取3，使得池化区域不重合，最后通过一个带Dropout的全连接层得到Softmax后的输出。
+```python
+def get_model(inputs_shape, keep=0.5):
+    """定义网络结构
+    Args:
+        inputs_shape: 输入数据的shape
+        keep: 全连接层输入神经元激活比例
+            keep=1.0: 关闭Dropout
+    Returns:
+        network: 定义好的网络结构
+    """
+    ni = tl.layers.Input(inputs_shape, name='input_layer')
+    nn = tl.layers.Conv1d(n_filter=6, filter_size=3, stride=2, in_channels=200, name='conv1d_1')(ni)
+    # nn = tl.layers.Conv1dLayer(act=tf.nn.relu, shape=[3, 200, 6], name='cnn_layer1', padding='VALID')(ni)
+    nn = tl.layers.MaxPool1d(filter_size=3, strides=3, name='pool_layer1')(nn)
+    nn = tl.layers.Flatten(name='flatten_layer')(nn)
+    nn = tl.layers.Dropout(keep=keep, name='drop1')(nn)
+    nn = tl.layers.Dense(n_units=2, act=tf.nn.relu, name="output")(nn)
+
+    model = tl.models.Model(inputs=ni, outputs=nn, name='cnn')
+    return model
+```
+
 
 #### 训练分类器
 
-我们使用Dynamic RNN实现不定长文本序列分类。首先加载数据，通过`sklearn`库的`train_test_split`方法将样本按照要求的比例切分成训练集和测试集。
+首先加载数据，通过`sklearn`库的`train_test_split`方法将样本按照要求的比例切分成训练集和测试集。
 
-```
-import logging, math, os, random, sys, shutil, time
-import numpy as np
-import tensorflow as tf
-import tensorlayer as tl
-from tensorflow.python.saved_model import builder as saved_model_builder
-from tensorflow.python.saved_model import signature_constants
-from tensorflow.python.saved_model import signature_def_utils
-from tensorflow.python.saved_model import tag_constants
-from tensorflow.python.saved_model import utils
-from tensorflow.python.util import compat
-from sklearn.model_selection import train_test_split
-
+```python
 def load_dataset(files, test_size=0.2):
     """加载样本并取test_size的比例做测试集
     Args:
@@ -52,7 +129,7 @@ def load_dataset(files, test_size=0.2):
     x = []
     y = []
     for file in files:
-        data = np.load(file)
+        data = np.load(file, allow_pickle=True)
         if x == [] or y == []:
             x = data['x']
             y = data['y']
@@ -60,241 +137,298 @@ def load_dataset(files, test_size=0.2):
             x = np.append(x, data['x'], axis=0)
             y = np.append(y, data['y'], axis=0)
 
-    x_train, x_test, y_train, y_test = train_test_split(
-        x, y, test_size=test_size)
+    x_train, x_test, y_train, y_test = train_test_split(x, y, test_size=test_size)
     return x_train, y_train, x_test, y_test
-```
 
-为了防止过拟合，我们对DynamicRNNLayer的输入与输出都做了Dropout操作。参数`keep`决定了输入或输出的保留比例。通过配置`keep`参数我们可以在训练的时候打开Dropout，在服务的时候关闭它。TensorFlow的`tf.nn.dropout`操作会根据`keep`值自动调整激活的神经元的输出权重，使得我们无须在`keep`改变时手动调节输出权重。
-
-```
-def network(x, keep=0.8):
-    """定义网络结构
-    Args:
-        x: Input Placeholder
-        keep: DynamicRNNLayer输入与输出神经元激活比例
-            keep=1.0: 关闭Dropout
-    Returns:
-        network: 定义好的网络结构
-    """
-    n_hidden = 64 # hidden layer num of features
-    network = tl.layers.InputLayer(x, name='input_layer')
-    network = tl.layers.DynamicRNNLayer(network,
-        cell_fn         = tf.contrib.rnn.BasicLSTMCell,
-        n_hidden        = n_hidden,
-        dropout         = keep,
-        sequence_length = tl.layers.retrieve_seq_length_op(x),
-        return_seq_2d   = True,
-        return_last     = True,
-        name            = 'dynamic_rnn')
-    network = tl.layers.DenseLayer(network, n_units=2,
-                                   act=tf.identity, name="output")
-    network.outputs_op = tf.argmax(tf.nn.softmax(network.outputs), 1)
-    return network
-```
-
-同样我们需要定时保存训练状态。
-
-```
-def load_checkpoint(sess, ckpt_file):
-    """恢复模型训练状态
-    必须在tf.global_variables_initializer()之后
-    """
-    index = ckpt_file + ".index"
-    meta  = ckpt_file + ".meta"
-    if os.path.isfile(index) and os.path.isfile(meta):
-        tf.train.Saver().restore(sess, ckpt_file)
-
-def save_checkpoint(sess, ckpt_file):
-    """保存模型训练状态
-    """
-    path = os.path.dirname(os.path.abspath(ckpt_file))
-    if os.path.isdir(path) == False:
-        logging.warning('(%s) not exists, making directories...', path)
-        os.makedirs(path)
-    tf.train.Saver().save(sess, ckpt_file)
 ```
 
 例子中每一次迭代，我们给网络输入128条文本序列。根据预测结果与标签的差异，网络不断优化权重，减小损失，逐步提高分类的准确性。
 
-```
-def train(sess, x, network):
+```python
+def train(model):
     """训练网络
     Args:
-        sess: TensorFlow Session
-        x: Input placeholder
-        network: Network
+        model: 分类器模型
     """
-    learning_rate  = 0.1
-    n_classes      = 1
-    y         = tf.placeholder(tf.int64, [None, ], name="labels")
-    cost      = tl.cost.cross_entropy(network.outputs, y, 'xentropy')
-    optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate) \
-                        .minimize(cost)
-    correct   = tf.equal(network.outputs_op, y)
-    accuracy  = tf.reduce_mean(tf.cast(correct, tf.float32))
-
-    # 使用TensorBoard可视化loss与准确率：`tensorboard --logdir=./logs`
-    tf.summary.scalar('loss', cost)
-    tf.summary.scalar('accuracy', accuracy)
-    merged = tf.summary.merge_all()
-    writter_train = tf.summary.FileWriter('./logs/train', sess.graph)
-    writter_test  = tf.summary.FileWriter('./logs/test')
-
-    x_train, y_train, x_test, y_test = load_dataset(
-        ["../word2vec/output/sample_seq_pass.npz",
-         "../word2vec/output/sample_seq_spam.npz"])
-
-    sess.run(tf.global_variables_initializer())
-    load_checkpoint(sess, ckpt_file)
-
-    n_epoch      = 2
-    batch_size   = 128
-    test_size    = 1280
+    learning_rate = 0.005
+    n_epoch = 100
+    batch_size = 128
     display_step = 10
-    step         = 0
-    total_step   = math.ceil(len(x_train) / batch_size) * n_epoch
+    loss_vals = []
+    acc_vals = []
+    optimizer = tf.optimizers.Adam(learning_rate=learning_rate)
+
     logging.info("batch_size: %d", batch_size)
     logging.info("Start training the network...")
+
     for epoch in range(n_epoch):
-        for batch_x, batch_y in tl.iterate.minibatches(
-                x_train, y_train, batch_size, shuffle=True):
+        step = 0
+        total_step = math.ceil(len(x_train) / batch_size)
+
+        # 利用训练集训练
+        model.train()
+        for batch_x, batch_y in tl.iterate.minibatches(x_train, y_train, batch_size, shuffle=True):
+
             start_time = time.time()
-            max_seq_len = max([len(d) for d in batch_x])
-            for i,d in enumerate(batch_x):
-                batch_x[i] += \
-                    [np.zeros(200) for i in range(max_seq_len - len(d))]
+            batch_y = batch_y.astype(np.int32)
+            for i, d in enumerate(batch_x):
+                batch_x[i] = batch_x[i][:max_seq_len]
+                batch_x[i] += [tf.convert_to_tensor(np.zeros(200), dtype=tf.float32) for i in
+                               range(max_seq_len - len(d))]
+                batch_x[i] = tf.convert_to_tensor(batch_x[i], dtype=tf.float32)
             batch_x = list(batch_x)
+            batch_x = tf.convert_to_tensor(batch_x, dtype=tf.float32)
 
-            feed_dict = {x: batch_x, y: batch_y}
-            sess.run(optimizer, feed_dict)
+            with tf.GradientTape() as tape:
+                _y = model(batch_x)
+                loss_val = tf.nn.sparse_softmax_cross_entropy_with_logits(batch_y, _y, name='train_loss')
+                loss_val = tf.reduce_mean(loss_val)
+            grad = tape.gradient(loss_val, model.trainable_weights)
+            optimizer.apply_gradients(zip(grad, model.trainable_weights))
 
-            # TensorBoard打点
-            summary = sess.run(merged, feed_dict)
-            writter_train.add_summary(summary, step)
+            loss_vals.append(loss_val)
+            acc_vals.append(accuracy(_y, batch_y))
 
-            # 计算测试集准确率
-            start = random.randint(0, len(x_test)-test_size)
-            test_data  = x_test[start:(start+test_size)]
-            test_label = y_test[start:(start+test_size)]
-            max_seq_len = max([len(d) for d in test_data])
-            for i,d in enumerate(test_data):
-                test_data[i] += \
-                    [np.zeros(200) for i in range(max_seq_len - len(d))]
-            test_data = list(test_data)
-            summary = sess.run(merged, {x: test_data, y: test_label})
-            writter_test.add_summary(summary, step)
-
-            # 每十步输出loss值与准确率
-            if step == 0 or (step + 1) % display_step == 0:
-                logging.info("Epoch %d/%d Step %d/%d took %fs",
-                             epoch + 1, n_epoch, step + 1, total_step,
-                             time.time() - start_time)
-                loss = sess.run(cost, feed_dict=feed_dict)
-                acc  = sess.run(accuracy, feed_dict=feed_dict)
-#                logging.info("Minibatch Loss= " + "{:.6f}".format(loss) +
-                             ", Training Accuracy= " + "{:.5f}".format(acc))
-                save_checkpoint(sess, ckpt_file)
-
+            if step + 1 == 1 or (step + 1) % display_step == 0:
+                logging.info("Epoch {}/{},Step {}/{}, took {}".format(epoch + 1, n_epoch, step, total_step,
+                                                                      time.time() - start_time))
+                loss = sum(loss_vals) / len(loss_vals)
+                acc = sum(acc_vals) / len(acc_vals)
+                del loss_vals[:]
+                del acc_vals[:]
+                logging.info("Minibatch Loss= " + "{:.6f}".format(loss) + ", Training Accuracy= " + "{:.5f}".format(acc))
             step += 1
-```
 
-我们在训练过程中使用TensorBoard将Loss和Accuracy的变化可视化。如图5所示，在100步后，训练集与测试集的准确率都从最开始的50%左右上升到了95%以上。
+        # 利用测试集评估
+        model.eval()
+        test_loss, test_acc, n_iter = 0, 0, 0
+        for batch_x, batch_y in tl.iterate.minibatches(x_test, y_test, batch_size, shuffle=True):
+            batch_y = batch_y.astype(np.int32)
+            for i, d in enumerate(batch_x):
+                batch_x[i] = batch_x[i][:max_seq_len]
+                batch_x[i] += [tf.convert_to_tensor(np.zeros(200), dtype=tf.float32) for i in
+                               range(max_seq_len - len(d))]
+                batch_x[i] = tf.convert_to_tensor(batch_x[i], dtype=tf.float32)
+            # ValueError: setting an array element with a sequence.
+            batch_x = list(batch_x)
+            batch_x = tf.convert_to_tensor(batch_x, dtype=tf.float32)
+
+            _y = model(batch_x)
+
+            loss_val = tf.nn.sparse_softmax_cross_entropy_with_logits(batch_y, _y, name='test_loss')
+            loss_val = tf.reduce_mean(loss_val)
+
+            test_loss += loss_val
+            test_acc += accuracy(_y, batch_y)
+            n_iter += 1
+        logging.info("   test loss: {}".format(test_loss / n_iter))
+        logging.info("   test acc:  {}".format(test_acc / n_iter))
+```
+在训练和测试的过程中，调用accuracy函数来计算分类的准确度
+```python
+def accuracy(y_pred, y_true):
+    """计算预测精准度accuracy
+    Args:
+        y_pred: 预测值
+        y_true: 真实值
+    Returns:
+        准确度
+    """
+    # Predicted class is the index of highest score in prediction vector (i.e. argmax).
+    correct_prediction = tf.equal(tf.argmax(y_pred, 1), tf.cast(y_true, tf.int64))
+    return tf.reduce_mean(tf.cast(correct_prediction, tf.float32), axis=-1)
+```
+我们在训练过程中使用TensorBoard将Loss和Accuracy的变化可视化。如图7所示，在100步后，训练集与测试集的准确率都从最开始的50%左右上升到了95%以上。
 
 <div align="center">
 <img src="../images/5-Loss_and_Accuracy-color.png">
 <br>
-<em align="center">图5 使用TensorBoard监控Loss和Accuracy</em>
+<em align="center">图7 使用TensorBoard监控Loss和Accuracy</em>
 </div>
 
 #### 模型导出
 
-TensorFlow的SavedModel模块`tensorflow.python.saved_model`提供了一种跨语言格式来保存和恢复训练后的TensorFlow模型。它使用方法签名来定义Graph的输入和输出，使上层系统能够更方便地生成、调用或转换TensorFlow模型。SavedModelBuilder类提供保存Graphs、Variables及Assets的方法。所保存的Graphs必须标注用途标签。在这个实例中我们打算将模型用于服务而非训练，因此我们用SavedModel预定义好`tag_constant.Serving`标签。
+TensorFlow提供了SavedModel这一格式专门用于保存可在多平台部署的文件，然而在TensorFlow2这一版本中，用于保存SavedModel的方法`tf.saved_model.save`仅支持对Trackable对象的模型导出。由于Trackable在Tensorflow2中是keras.model的父类，而TensorLayer构建的model不继承Trackable类，因此我们构建的model无法用`tf.saved_model.save`导出可部署文件。
 
-为了方便构建签名，SavedModel提供了`signature_def_utils` API。我们通过`signature_def_utils.build_signature_def`方法来构建`predict_signature`。一个`predict_signature`至少包含以下参数：
+在这里，我们的解决思路是先将TensorLayer模型保存为hdf5文件，再设计一套转译机制，将该hdf5文件转成tf.keras可以读取的形式，然后再由`tf.saved_model.save`方法进行模型导出。
 
+hdf5文件从TensorLayer到keras的转译，被分为weights和config两部分。
+```python
+def translator_tl2_keras_h5(_tl_h5_path, _keras_h5_path):
+    f_tl_ = h5py.File(_tl_h5_path, 'r+')
+    f_k_ = h5py.File(_keras_h5_path, 'a')
+    f_k_.clear()
+    weights_translator(f_tl_, f_k_)
+    config_translator(f_tl_, f_k_)
+    f_tl_.close()
+    f_k_.close()
 ```
-inputs = {'x': tensor_info_x} 指定输入的tensor信息
-outputs = {'y': tensor_info_y} 指定输出的tensor信息
-method_name = signature_constants.PREDICT_METHOD_NAME
+weights_translator将训练过程中学习到的权重(例如bias和kernel)进行转译。
+```python
+def weights_translator(f_tl, f_k):
+    # todo: delete inputlayer
+    if 'model_weights' not in f_k.keys():
+        f_k_model_weights = f_k.create_group('model_weights')
+    else:
+        f_k_model_weights = f_k['model_weights']
+    for key in f_tl.keys():
+        if key not in f_k_model_weights.keys():
+            f_k_model_weights.create_group(key)
+        try:
+            f_tl_para = f_tl[key][key]
+        except KeyError:
+            pass
+        else:
+            if key not in f_k_model_weights[key].keys():
+                f_k_model_weights[key].create_group(key)
+            weight_names = []
+            f_k_para = f_k_model_weights[key][key]
+            cell_name = ''
+            if key == 'rnn_1':
+                cell_name = 'lstm_cell'
+                f_k_para.create_group(cell_name)
+                f_k_para = f_k_para[cell_name]
+                f_k_model_weights.create_group('masking')
+                f_k_model_weights['masking'].attrs['weight_names'] = []
+            for k in f_tl_para:
+                if k == 'biases:0' or k == 'bias:0':
+                    weight_name = 'bias:0'
+                elif k == 'filters:0' or k == 'weights:0' or k == 'kernel:0':
+                    weight_name = 'kernel:0'
+                elif k == 'recurrent_kernel:0':
+                    weight_name = 'recurrent_kernel:0'
+                else:
+                    raise Exception("cant find the parameter '{}' in tensorlayer".format(k))
+                if weight_name in f_k_para:
+                    del f_k_para[weight_name]
+                f_k_para.create_dataset(name=weight_name, data=f_tl_para[k][:],
+                                                           shape=f_tl_para[k].shape)
+                # todo：对RNN层的weights进行通用适配
+                if key == 'rnn_1':
+                    weight_names.append('{}/{}/{}'.format(key, cell_name, weight_name).encode('utf8'))
+                else:
+                    weight_names.append('{}/{}'.format(key, weight_name).encode('utf8'))
+
+            weight_names.reverse()  # todo: 临时解决了参数顺序和keras不一致的问题
+            f_k_model_weights[key].attrs['weight_names'] = weight_names
+    f_k_model_weights.attrs['backend'] = keras.backend.backend().encode('utf8')
+    f_k_model_weights.attrs['keras_version'] = str(keras.__version__).encode('utf8')
+    f_k_model_weights.attrs['layer_names'] = [key.encode('utf8') for key in f_tl.keys()]
 ```
+config_translator转译了模型的config信息，包括了模型的结构，和训练过程中的loss，metrics，optimizer等信息。
+```PYTHON
+def config_translator(f_tl, f_k):
+    tl_model_config = f_tl.attrs['model_config'].decode('utf8')
+    tl_model_config = eval(tl_model_config)
+    tl_model_architecture = tl_model_config['model_architecture']
 
-`method_name`定义方法名，它的值应该是`tensorflow/serving/predict`、`ten
-sorflow/serving/classify`和`tensorflow/serving/regress`三者之一。Builder标签用来明确Meta Graph被加载的方式，只接受`serve`和`train`两种类型。接下来我们就要使用TensorFlow的SavedModelBuilder类来导出模型了。
+    k_layers = []
+    for key, tl_layer in enumerate(tl_model_architecture):
+        if key == 1:
+            k_layer = layer_translator(tl_layer, is_first_layer=True)
+        else:
+            k_layer = layer_translator(tl_layer)
+        if k_layer is not None:
+            k_layers.append(k_layer)
+    f_k.attrs['model_config'] = json.dumps({'class_name': 'Sequential',
+                                            'config': {'name': 'sequential', 'layers': k_layers},
+                                            'build_input_shape': input_shape},
+                                           default=serialization.get_json_type).encode('utf8')
+    f_k.attrs['backend'] = keras.backend.backend().encode('utf8')
+    f_k.attrs['keras_version'] = str(keras.__version__).encode('utf8')
 
+    # todo: translate the 'training_config'
+    training_config = {'loss': {'class_name': 'SparseCategoricalCrossentropy',
+                                'config': {'reduction': 'auto', 'name': 'sparse_categorical_crossentropy',
+                                           'from_logits': False}},
+                       'metrics': ['accuracy'], 'weighted_metrics': None, 'loss_weights': None, 'sample_weight_mode': None,
+                       'optimizer_config': {'class_name': 'Adam',
+                                            'config': {'name': 'Adam', 'learning_rate': 0.01, 'decay': 0.0,
+                                                       'beta_1': 0.9, 'beta_2': 0.999, 'epsilon': 1e-07, 'amsgrad': False
+                                                       }
+                                            }
+                       }
+
+    f_k.attrs['training_config'] = json.dumps(training_config, default=serialization.get_json_type).encode('utf8')
 ```
-def export(model_version, model_dir, sess, x, y_op):
-    """导出tensorflow_serving可用的模型
-    """
-    if model_version <= 0:
-        logging.warning('Please specify a positive value for version.')
-        sys.exit()
-
-    path = os.path.dirname(os.path.abspath(model_dir))
-    if os.path.isdir(path) == False:
-        logging.warning('(%s) not exists, making directories...', path)
-        os.makedirs(path)
-
-    export_path = os.path.join(
-        compat.as_bytes(model_dir),
-        compat.as_bytes(str(model_version)))
-
-    if os.path.isdir(export_path) == True:
-        logging.warning('(%s) exists, removing dirs...', export_path)
-        shutil.rmtree(export_path)
-
-    builder = saved_model_builder.SavedModelBuilder(export_path)
-    tensor_info_x = utils.build_tensor_info(x)
-    tensor_info_y = utils.build_tensor_info(y_op)
-
-    prediction_signature = signature_def_utils.build_signature_def(
-        inputs={'x': tensor_info_x},
-        outputs={'y': tensor_info_y},
-        method_name=signature_constants.PREDICT_METHOD_NAME)
-
-    builder.add_meta_graph_and_variables(
-        sess,
-        [tag_constants.SERVING],
-        signature_def_map={
-            'predict_text': prediction_signature,
-            signature_constants.DEFAULT_SERVING_SIGNATURE_DEF_KEY: \
-                prediction_signature
-        })
-
-    builder.save()
+TensorLayer和keras的模型在保存config时，都是以layer为单位分别保存，于是在translate时，我们按照每个层的类型进行逐层转译。
+```PYTHON
+def layer_translator(tl_layer, is_first_layer=False):
+    _input_shape = None
+    global input_shape
+    if is_first_layer:
+        _input_shape = input_shape
+    if tl_layer['class'] == '_InputLayer':
+        input_shape = tl_layer['args']['shape']
+    elif tl_layer['class'] == 'Conv1d':
+        return layer_conv1d_translator(tl_layer, _input_shape)
+    elif tl_layer['class'] == 'MaxPool1d':
+        return layer_maxpooling1d_translator(tl_layer, _input_shape)
+    elif tl_layer['class'] == 'Flatten':
+        return layer_flatten_translator(tl_layer, _input_shape)
+    elif tl_layer['class'] == 'Dropout':
+        return layer_dropout_translator(tl_layer, _input_shape)
+    elif tl_layer['class'] == 'Dense':
+        return layer_dense_translator(tl_layer, _input_shape)
+    elif tl_layer['class'] == 'RNN':
+        return layer_rnn_translator(tl_layer, _input_shape)
+    return None
 ```
-
-以上函数准备完成，依次执行训练和导出，得到分类器服务模型（Servable）。
-
-
+以rnn层为例，我们设计了其config的转译方法。
+```PYTHON
+def layer_rnn_translator(tl_layer, _input_shape=None):
+    args = tl_layer['args']
+    name = args['name']
+    cell = args['cell']
+    config = {'name': name, 'trainable': True, 'dtype': 'float32', 'return_sequences': False,
+              'return_state': False, 'go_backwards': False, 'stateful': False, 'unroll': False, 'time_major': False,
+              'cell': cell
+              }
+    if _input_shape is not None:
+        config['batch_input_shape'] = _input_shape
+    result = {'class_name': 'RNN', 'config': config}
+    return result
 ```
+按照main函数的顺序，分类器完成了训练和导出模型的全部步骤。
+```python
 if __name__ == '__main__':
+
+    # 定义log格式
     fmt = "%(asctime)s %(levelname)s %(message)s"
     logging.basicConfig(format=fmt, level=logging.INFO)
 
-    ckpt_file = "./rnn_checkpoint/rnn.ckpt"
-    x = tf.placeholder("float", [None, None, 200], name="inputs")
-    sess = tf.InteractiveSession()
+    # 加载数据
+    x_train, y_train, x_test, y_test = load_dataset(
+        ["../word2vec/output/sample_seq_pass.npz",
+         "../word2vec/output/sample_seq_spam.npz"])
 
-    flags = tf.flags
-    flags.DEFINE_string("mode", "train", "train or export")
-    FLAGS = flags.FLAGS
+    # 构建模型
+    model = get_model(inputs_shape=[None, 20, 200])
 
-    if FLAGS.mode == "train":
-        network = network(x)
-        train(sess, x, network)
-        logging.info("Optimization Finished!")
-    elif FLAGS.mode == "export":
-        model_version = 1
-        model_dir = "./output/rnn_model"
-        network = network(x, keep=1.0)
-        sess.run(tf.global_variables_initializer())
-        load_checkpoint(sess, ckpt_file)
-        export(model_version, model_dir, sess, x, network.outputs_op)
-        logging.info("Servable Export Finishied!")
+    # 开始训练
+    train(model)
+    logging.info("Optimization Finished!")
+
+    # h5保存和转译
+    model_dir = './model_h5'
+    if not os.path.exists(model_dir):
+        os.mkdir(model_dir)
+    tl_h5_path = model_dir + '/model_cnn_tl.hdf5'
+    keras_h5_path = model_dir + '/model_cnn_tl2k.hdf5'
+    tl.files.save_hdf5_graph(network=model, filepath=tl_h5_path, save_weights=True)
+    translator_tl2_keras_h5(tl_h5_path, keras_h5_path)
+
+    # 读取模型
+    new_model = keras.models.load_model(keras_h5_path)
+    x_test, y_test = format_convert(x_test, y_test)
+    score = new_model.evaluate(x_test, y_test, batch_size=128)
+
+    # 保存SavedModel可部署文件
+    saved_model_version = 1
+    saved_model_path = "./saved_models/cnn/"
+    tf.saved_model.save(new_model, saved_model_path + str(saved_model_version))
 ```
-
-我们将在`./output/rnn_model`目录下看到导出模型的每个版本，实例中`model_version`被设置为1，因此创建了相应的子目录`./output/rnn_mode/1`。
+最终我们将在`./saved_models/rnn`目录下看到导出模型的每个版本，实例中`model_version`被设置为1，因此创建了相应的子目录`./saved_models/rnn/1`。
 
 SavedModel目录具有以下结构。
 
@@ -308,79 +442,12 @@ saved_model.pb
 
 导出的模型在TensorFlow Serving中又被称为Servable，其中`saved_model.pb`保存了接口的数据交换格式，`variables`保存了模型的网络结构和参数，`assets`用来保存如词库等模型初始化所需的外部资源。本例没有用到外部资源，因此没有`assets`文件夹。
 
-### 其他常用方法
 
-前文提到过，分类器还可以用NBOW+MLP（如图9所示）和CNN来实现。借助TensorLayer，我们可以很方便地重组网络。下面简单介绍这两种网络的结构及其实现。
 
-由于词向量之间存在着线性平移的关系，如果相似词空间距离相近，那么在仅仅将文本中一个或几个词改成近义词的情况下，两个文本的词向量线性相加的结果也应该是非常接近的。
 
-<div align="center">
-<img src="../images/9-NBOW_and_MLP_Classifier-color.png">
-<br>
-<em align="center">图9 NBOW+MLP分类器</em>
-</div>
 
-多层神经网络可以无限逼近任意函数，能够胜任复杂的非线性分类任务。下面的代码将Word2vec训练好的词向量线性相加，再通过三层全连接网络进行分类。
 
-```
-def network(x, keep=0.8):
-    """定义网络结构
-    Args:
-        x: Input Placeholder
-        keep: 各层神经元激活比例
-            keep=1.0: 关闭Dropout
-    Returns:
-        network: 定义好的网络结构
-    """
-    network = tl.layers.InputLayer(x, name='input_layer')
-    network = tl.layers.DropoutLayer(
-        network, keep=keep, name='drop1', is_fix=True)
-    network = tl.layers.DenseLayer(
-        network, n_units=200, act=tf.nn.relu, name='relu1')
-    network = tl.layers.DropoutLayer(
-        network, keep=keep, name='drop2', is_fix=True)
-    network = tl.layers.DenseLayer(
-        network, n_units=200, act=tf.nn.relu, name='relu')
-    network = tl.layers.DropoutLayer(
-        network, keep=keep, name='drop3', is_fix=True)
-    network = tl.layers.DenseLayer(
-        network, n_units=2, act=tf.identity, name='output')
-    network.outputs_op = tf.argmax(tf.nn.softmax(network.outputs), 1)
-    return network
-```
 
-CNN卷积的过程捕捉了文本的局部相关性，在文本分类中也取得了不错的结果。图10演示了CNN分类过程。输入是一个由6维词向量组成的最大长度为11的文本，经过与4个3×6的卷积核进行卷积，得到4张9维的特征图。再对特征图每3块不重合区域进行最大池化，将结果合成一个12维的向量输入到全连接层。
 
-<div align="center">
-<img src="../images/10-CNN_Classifier-color.png">
-<br>
-<em align="center">图10 CNN分类器</em>
-</div>
 
-下面代码中输入是一个由200维词向量组成的最大长度为20的文本（确定好文本的最大长度后，我们需要对输入进行截取或者填充）。卷积层参数[3, 200, 6]代表6个3×200的卷积核。这里使用1D CNN，是因为我们把文本序列看成一维数据，这意味着卷积的过程只会朝一个方向进行（同理，处理图片和小视频分别需要使用2D CNN和3D CNN）。卷积核宽度被设置为和词向量大小一致，确保了词向量作为最基本的元素不会被破坏。我们选取连续的3维作为池化区域，滑动步长取3，使得池化区域不重合，最后通过一个带Dropout的全连接层得到Softmax后的输出。
 
-```
-def network(x, keep=0.8):
-    """定义网络结构
-    Args:
-        x: Input Placeholder
-        keep: 全连接层输入神经元激活比例
-            keep=1.0: 关闭Dropout
-    Returns:
-        network: 定义好的网络结构
-    """
-    network = tl.layers.InputLayer(x, name='input_layer')
-    network = tl.layers.Conv1dLayer(
-        network, act=tf.nn.relu, shape=[3, 200, 6],
-        name='cnn_layer1', padding='VALID')
-    network = tl.layers.MaxPool1d(
-        network, filter_size=3, strides=3, name='pool_layer1')
-    network = tl.layers.FlattenLayer(
-        network, name='flatten_layer')
-    network = tl.layers.DropoutLayer(
-        network, keep=keep, name='drop1', is_fix=True)
-    network = tl.layers.DenseLayer(
-        network, n_units=2, act=tf.identity, name="output")
-    network.outputs_op = tf.argmax(tf.nn.softmax(network.outputs), 1)
-    return network
-```

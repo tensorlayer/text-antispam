@@ -35,7 +35,7 @@ def load_dataset():
     files = ['data/msglog/msgpass.log.seg', 'data/msglog/msgspam.log.seg']
     words = []
     for file in files:
-        f = open(file)
+        f = open(file,encoding='utf-8')
         for line in f:
             for word in line.strip().split(' '):
                 if word != '':
@@ -148,7 +148,7 @@ def train(model_name):
 
     emb, nce = emb_net([train_inputs, train_labels])
     model = tl.models.Model(inputs=[train_inputs, train_labels], outputs=[emb, nce])
-    optimizer = tf.optimizers.Adagrad(learning_rate, initial_accumulator_value=0.1)
+    optimizer = tf.optimizers.Adam(learning_rate)
 
     # Start training
     model.train()

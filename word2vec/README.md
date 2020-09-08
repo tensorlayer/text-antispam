@@ -97,44 +97,38 @@ def get_vocabulary_size(words, min_freq=3):
     return size
 ```
 
-在训练过程中，我们不时地要将训练状态进行保存。`tf.train.Saver`是TensorFlow自带的模型存储方式，可以非常方便地保存当前模型的变量或者导入之前训练好的变量。
+在训练过程中，我们不时地要将训练状态进行保存。`save_weights()和load_weights()`是TensorLayer自带的模型权重存储和读取方式，可以非常方便地保存当前模型的变量或者导入之前训练好的变量。
 
 ```
-def save_checkpoint(ckpt_file_path):
+def save_weights(model, weights_file_path):
     """保存模型训练状态
     将会产生以下文件:
-        checkpoint
-        model_name.ckpt.data-?????-of-?????
-        model_name.ckpt.index
-        model_name.ckpt.meta
+        weights/model_word2vec_200.hdf5
     Args:
-        ckpt_file_path: 储存训练状态的文件路径
+        weights_file_path: 储存训练状态的文件路径
     """
-    path = os.path.dirname(os.path.abspath(ckpt_file_path))
+    path = os.path.dirname(os.path.abspath(weights_file_path))
     if os.path.isdir(path) == False:
-        logging.warning('(%s) not exists, making directories...', path)
+        logging.warning('Path (%s) not exists, making directories...', path)
         os.makedirs(path)
-    tf.train.Saver().save(sess, ckpt_file_path+'.ckpt')
+    model.save_weights(filepath=weights_file_path)
 
-def load_checkpoint(ckpt_file_path):
+def load_weights(model, weights_file_path):
     """恢复模型训练状态
-    默认TensorFlow Session将从ckpt_file_path.ckpt中恢复所保存的训练状态
+    从weights_file_path中恢复所保存的训练状态
     Args:
-        ckpt_file_path: 储存训练状态的文件路径
+        weights_file_path: 储存训练状态的文件路径
     """
-    ckpt  = ckpt_file_path + '.ckpt'
-    index = ckpt + ".index"
-    meta  = ckpt + ".meta"
-    if os.path.isfile(index) and os.path.isfile(meta):
-        tf.train.Saver().restore(sess, ckpt)
+    if os.path.isfile(weights_file_path):
+        model.load_weights(filepath=weights_file_path)
 ```
 
-我们还需要将词向量保存下来用于后续分类器的训练以及再往后的线上服务。如图2所示，词向量保存在隐层的`W1`矩阵中。如图4所示，输入一个One-hot Representation表示的词与隐层矩阵相乘，输出的就是这个词的词向量。我们将词与向量一一映射导出到一个`.npy`文件中。
+我们还需要将词向量保存下来用于后续分类器的训练以及再往后的线上服务。如图2所示，词向量保存在隐层的`W1`矩阵中。如图3所示，输入一个One-hot Representation表示的词与隐层矩阵相乘，输出的就是这个词的词向量。我们将词与向量一一映射导出到一个`.npy`文件中。
 
 <div align="center">
 <img src="../images/4-Lookup_Table-color.png">
 <br>
-<em align="center">图4 隐层矩阵存储着词向量</em>
+<em align="center">图3 隐层矩阵存储着词向量</em>
 </div>
 
 ```
@@ -155,7 +149,7 @@ def save_embedding(dictionary, network, embedding_file_path):
     words, ids = zip(*dictionary.items())
     params = network.normalized_embeddings
     embeddings = tf.nn.embedding_lookup(
-        params, tf.constant(ids, dtype=tf.int32)).eval()
+        params, tf.constant(ids, dtype=tf.int32))
     wv = dict(zip(words, embeddings))
     path = os.path.dirname(os.path.abspath(embedding_file_path))
     if os.path.isdir(path) == False:
@@ -186,43 +180,48 @@ def train(model_name):
     skip_window     = 5    # 上下文窗口，单词前后各取五个词
     num_skips       = 10   # 从窗口中选取多少个预测对
     num_sampled     = 64   # 负采样个数
-    learning_rate   = 0.1  # 学习率
-    n_epoch         = 10   # 所有样本重复训练10次
+    learning_rate   = 0.025  # 学习率
+    n_epoch         = 50   # 所有样本重复训练50次
     num_steps       = int((data_size/batch_size) * n_epoch) # 总迭代次数
 
-    data, count, dictionary, reverse_dictionary = \
-        tl.nlp.build_words_dataset(words, vocabulary_size)
-    train_inputs = tf.placeholder(tf.int32, shape=[batch_size])
-    train_labels = tf.placeholder(tf.int32, shape=[batch_size, 1])
+    data, count, dictionary, reverse_dictionary = tl.nlp.build_words_dataset(words, vocabulary_size)
+    train_inputs = tl.layers.Input([batch_size], dtype=tf.int32)
+    train_labels = tl.layers.Input([batch_size, 1], dtype=tf.int32)
 
-    with tf.device('/cpu:0'):
-        emb_net = tl.layers.Word2vecEmbeddingInputlayer(
-            inputs          = train_inputs,
-            train_labels    = train_labels,
-            vocabulary_size = vocabulary_size,
-            embedding_size  = embedding_size,
-            num_sampled     = num_sampled)
-        loss = emb_net.nce_cost
-        optimizer = tf.train.GradientDescentOptimizer(learning_rate) \
-                            .minimize(loss)
+    emb_net = tl.layers.Word2vecEmbedding(
+        vocabulary_size   = vocabulary_size,
+        embedding_size    = embedding_size,
+        num_sampled       = num_sampled,
+        activate_nce_loss = True,
+        nce_loss_args     = {})
 
-    tl.layers.initialize_global_variables(sess)
-    ckpt_file_path = "checkpoint/" + model_name
-    load_checkpoint(ckpt_file_path)
+    emb, nce = emb_net([train_inputs, train_labels])
+    model = tl.models.Model(inputs=[train_inputs, train_labels], outputs=[emb, nce])
+    optimizer = tf.optimizers.Adam(learning_rate)
 
+    # Start training
+    model.train()
+    weights_file_path = "weights/" + model_name + ".hdf5"
+    load_weights(model, weights_file_path)
+
+    loss_vals = []
     step = data_index = 0
+    print_freq = 200
     while (step < num_steps):
-        batch_inputs, batch_labels, data_index = \
-            tl.nlp.generate_skip_gram_batch(data=data,
-                                            batch_size=batch_size,
-                                            num_skips=num_skips,
-                                            skip_window=skip_window,
-                                            data_index=data_index)
-        feed_dict = {train_inputs: batch_inputs, train_labels: batch_labels}
-        _, loss_val = sess.run([optimizer, loss], feed_dict=feed_dict)
-        if (step != 0) and (step % 2000) == 0:
-            logging.info("(%d/%d) loss: %f.", step, num_steps, loss_val)
-            save_checkpoint(ckpt_file_path)
+        batch_inputs, batch_labels, data_index = tl.nlp.generate_skip_gram_batch(
+            data=data, batch_size=batch_size, num_skips=num_skips,
+            skip_window=skip_window, data_index=data_index)
+
+        with tf.GradientTape() as tape:
+            _, loss_val = model([batch_inputs, batch_labels])
+        grad = tape.gradient(loss_val, model.trainable_weights)
+        optimizer.apply_gradients(zip(grad, model.trainable_weights))
+
+        loss_vals.append(loss_val)
+        if step % print_freq == 0:
+            logging.info("(%d/%d) latest average loss: %f.", step, num_steps, sum(loss_vals)/len(loss_vals))
+            del loss_vals[:]
+            save_weights(model, weights_file_path)
             embedding_file_path = "output/" + model_name
             save_embedding(dictionary, emb_net, embedding_file_path)
         step += 1
@@ -231,14 +230,46 @@ if __name__ == '__main__':
     fmt = "%(asctime)s %(levelname)s %(message)s"
     logging.basicConfig(format=fmt, level=logging.INFO)
 
-    sess = tf.InteractiveSession() # 默认TensorFlow Session
     train('model_word2vec_200')
-    sess.close()
 ```
 
 #### 文本的表示
 
-训练好词向量后，我们将每一行文本转化成词向量序列。分别将正负样本保存到`sample_seq_pass.npz`和`sample_seq_spam.npz`中。
+训练好词向量后，我们将每一行文本转化成词向量序列。有两种方式：将文本各单词向量求和成为一个新的特征向量（适用于MLP Classifier）分别将正负样本保存到`sample_pass.npz`和`sample_spam.npz`中； 或者将文本各单词向量序列化（适用于CNN Classifier和RNN Classifier），分别将正负样本保存到`sample_seq_pass.npz`和`sample_seq_spam.npz`中。
+
+为MLP分类器准备训练集：
+
+```
+import numpy as np
+import tensorlayer as tl
+
+wv = tl.files.load_npy_to_any(name='./output/model_word2vec_200.npy')
+for label in ["pass", "spam"]:
+    embeddings = []
+    inp = "data/msglog/msg" + label + ".log.seg"
+    outp = "output/sample_" + label
+    f = open(inp, encoding='utf-8')
+    for line in f:
+        words = line.strip().split(' ')
+        text_embedding = np.zeros(200)
+        for word in words:
+            try:
+                text_embedding += wv[word]
+            except KeyError:
+                text_embedding += wv['UNK']
+        embeddings.append(text_embedding)
+
+    embeddings = np.asarray(embeddings, dtype=np.float32)
+    if label == "spam":
+        labels = np.zeros(embeddings.shape[0])
+    elif label == "pass":
+        labels = np.ones(embeddings.shape[0])
+
+    np.savez(outp, x=embeddings, y=labels)
+    f.close()
+```
+
+为CNN或RNN分类器准备训练集：
 
 ```
 import numpy as np
