@@ -3,43 +3,72 @@
 
 反垃圾服务分为线上与线下两层。线上实时服务要求毫秒级判断文本是否属于垃圾文本，线下离线计算需要根据新进的样本不断更新模型，并及时推送到线上。
 
-图6所示的分类器就是用TensorFlow Serving提供的服务。TensorFlow Serving是一个灵活、高性能的机器学习模型服务系统，专为生产环境而设计。它可以将训练好的机器学习模型轻松部署到线上，并且支持热更新。它使用gRPC作为接口框架接受外部调用，服务稳定，接口简单。这些优秀特性使我们能够专注于线下模型训练。
+图8所示的分类器就是用TensorFlow Serving提供的服务。TensorFlow Serving是一个灵活、高性能的机器学习模型服务系统，专为生产环境而设计。它可以将训练好的机器学习模型轻松部署到线上，并且支持热更新。它使用gRPC作为接口框架接受外部调用，服务稳定，接口简单。这些优秀特性使我们能够专注于线下模型训练。
 
 <div align="center">
 <img src="../images/6-Antispam_Service_Architecture-color.png">
 <br>
-<em align="center">图6 反垃圾服务架构</em>
+<em align="center">图8 反垃圾服务架构</em>
 </div>
 
 为什么使用TensorFlow Serving而不是直接启动多个加载了模型的Python进程来提供线上服务？因为重复引入TensorFlow并加载模型的Python进程浪费资源并且运行效率不高。而且TensorFlow本身有一些限制导致并不是所有时候都能启动多个进程。TensorFlow默认会使用尽可能多的GPU并且占用所使用的GPU。因此如果有一个TensorFlow进程正在运行，可能导致其他TensorFlow进程无法启动。虽然可以指定程序使用特定的GPU，但是进程的数量也受到GPU数量的限制，总体来说不利于分布式部署。而TensorFlow Serving提供了一个高效的分布式解决方案。当新数据可用或改进模型时，加载并迭代模型是很常见的。TensorFlow Serving能够实现模型生命周期管理，它能自动检测并加载最新模型或回退到上一个模型，非常适用于高频迭代场景。
 
-
-~~TensorFlow Serving的编译依赖Google的开源编译工具Bazel。具体的安装可以参考[官方文档](https://docs.bazel.build/versions/master/install-compile-source.html)~~。*现在通过Docker使用Tensorflow Serving已经非常方便了，建议大家直接参考[TensorFlow Serving with Docker](https://www.tensorflow.org/tfx/serving/docker)这篇文档安装TensorFlow Serving。*
-
-部署的方式非常简单，只需在启动TensorFlow Serving时加载Servable并定义`model_name`即可，这里的`model_name`将用于与客户端进行交互。
+*现在通过Docker使用Tensorflow Serving已经非常方便了，建议大家直接参考[TensorFlow Serving with Docker](https://www.tensorflow.org/tfx/serving/docker)这篇文档安装TensorFlow Serving。*
 
 ```
-$ ./tensorflow_model_server --port=9000 --model_base_path=./model --
-model_name=antispam
+$ docker pull tensorflow/serving
 ```
 
-可以看到TensorFlow Serving成功加载了我们刚刚导出的模型。
+部署的方式非常简单，只需在启动TensorFlow Serving时加载Servable并定义`model_name`即可，这里的`model_name`将用于与客户端进行交互。运行TensorFlow Serving并从指定目录加载Servable的Docker命令为：
 
 ```
-I tensorflow_serving/model_servers/server_core.cc:338] Adding/
-updating models.
-I tensorflow_serving/model_servers/server_core.cc:384] (Re-)adding 
-model:antispam
-I .../basic_manager.cc:698] Successfully reserved resources to load
-servable {name: antispam version: 1}
-...
-I external/.../saved_model/loader.cc:274] Loading SavedModel: 
-success.
-Took 138439 microseconds.
-I .../loader_harness.cc:86] Successfully loaded servable version
-{name: antispam version: 1}
-I tensorflow_serving/model_servers/main.cc:298] Running ModelServer
-at 0.0.0.0:9000 ...
+$ docker run -dt -p 8501:8501 -v /Users/code/task/text_antispam_tl2/network/saved_models:/models/saved_model -e MODEL_NAME=saved_model tensorflow/serving &
+```
+
+冒号前是模型保存的路径（注意不包括版本号）。run命令的一些常用参数说明如下：
+
+```
+-a stdin: 指定标准输入输出内容类型，可选 STDIN/STDOUT/STDERR 三项；
+-d: 后台运行容器，并返回容器ID；
+-i: 以交互模式运行容器，通常与 -t 同时使用；
+-P: 随机端口映射，容器内部端口随机映射到主机的端口
+-p: 指定端口映射，格式为：主机(宿主)端口:容器端口
+-t: 为容器重新分配一个伪输入终端，通常与 -i 同时使用；
+--name="nginx-lb": 为容器指定一个名称；
+--dns 8.8.8.8: 指定容器使用的DNS服务器，默认和宿主一致；
+--dns-search example.com: 指定容器DNS搜索域名，默认和宿主一致；
+-h "mars": 指定容器的hostname；
+-e username="ritchie": 设置环境变量；
+--env-file=[]: 从指定文件读入环境变量；
+--cpuset="0-2" or --cpuset="0,1,2": 绑定容器到指定CPU运行；
+-m :设置容器使用内存最大值；
+--net="bridge": 指定容器的网络连接类型，支持 bridge/host/none/container: 四种类型；
+--link=[]: 添加链接到另一个容器；
+--expose=[]: 开放一个端口或一组端口；
+--volume , -v: 绑定一个卷
+-dt表示后台运行容器，并返回容器ID可以看到TensorFlow Serving成功加载了我们刚刚导出的模型。
+```
+
+运行完可以看到运行的tfs容器ID。还可以进一步查看保存模型的Signature（用于验证模型是否成功保存）：
+```
+saved_model_cli show --dir /Users/code/task/text_antispam_tl2/network/saved_models/1 --all
+```
+
+输出信息类似以下形式：
+
+```
+signature_def['serving_default']:
+  The given SavedModel SignatureDef contains the following input(s):
+    inputs['conv1d_1_input'] tensor_info:
+        dtype: DT_FLOAT
+        shape: (-1, 20, 200)
+        name: serving_default_conv1d_1_input:0
+  The given SavedModel SignatureDef contains the following output(s):
+    outputs['output'] tensor_info:
+        dtype: DT_FLOAT
+        shape: (-1, 2)
+        name: StatefulPartitionedCall:0
+  Method name is: tensorflow/serving/predict
 ```
 
 ### 客户端调用
@@ -51,7 +80,7 @@ TensorFlow Serving通过gRPC框架接收外部调用。gRPC是一种高性能、
 <div align="center">
 <img src="../images/7-gRPC-color.png">
 <br>
-<em align="center">图7 客户端与服务端使用gRPC进行通信</em>
+<em align="center">图9 客户端与服务端使用gRPC进行通信</em>
 </div>
 
 ```
@@ -69,71 +98,23 @@ serving
 ├── ...
 ```
 
-*在写这篇文章的时候，TensorFlow Serving还没有官方的pip包用以供python调用其gRPC API，但是现在已经有了，大家可以通过以下命令很方便地安装TensorFLow Serving Python客户端代码。通过这种方式安装可以忽略以下生成Python功能库的复杂流程。*
+接下来写一个简单的客户端程序来调用部署好的模型。以RNN Classifier为例，`serving_rnn.py`负责构建一个Request用于与TensorFlow Serving交互。为了描述简洁，这里分词使用了结巴分词，词向量也是直接载入内存，实际生产环境中分词与词向量获取是一个单独的服务。特别需要注意的是，输入的签名和数据必须与之前导出的模型相匹配。
 
 ```
-pip install tensorflow-serving-api
-```
-
-*另外TensorFlow Serving也提供了RESTful API调用方式，虽然实测性能略低于gRPC API，但是部署起来方便很多。具体使用方式建议参考这篇[RESTful API](https://www.tensorflow.org/tfx/serving/api_rest)。*
-
-接下来需要生成Python可以直接调用的功能库。首先将这三个文件复制到`serving/
-tensorflow`目录下:
-
-```
-$ cd serving/tensorflow_serving/apis
-$ cp model.proto predict.proto prediction_service.proto ../../tensorflow
-```
-
-
-因为我们移动了文件，所以`predict.proto`和`prediction_service.proto`的`import`需要略作修改：
-
-```
-predict.proto: import "tensorflow_serving/apis/model.proto" 
--> import "model.proto"
-prediction_service.proto: import "tensorflow_serving/apis/predict.proto" 
--> import "predict.proto"
-```
-
-
-删去没有用到的RPC定义`service (Classify, Regress, GetModelMetadata)`和引入`import (classification.proto, get_model_metadata.proto, regression.proto)`。最后使用`grpcio-tools`生成功能库。
-
-```
-$ pip install grpcio
-$ pip install grpcio-tools
-$ python -m grpc.tools.protoc -I./ --python_out=. --grpc_python_out=. ./
-*.proto
-```
-
-
-在当前目录能找到以下6个文件：
-
-```
-model_pb2.py
-model_pb2_grpc.py
-predict_pb2.py
-predict_pb2_grpc.py
-prediction_service_pb2.py
-prediction_service_pb2_grpc.py
-```
-
-其中`model_pb2.py`、`predict_pb2.py`和`prediction_service_pb2.py`是Python与TensorFlow Serving交互所必需的功能库。
-
-接下来写一个简单的客户端程序来调用部署好的模型。`engine.py`负责构建一个Request用于与TensorFlow Serving交互。为了描述简洁，这里分词使用了结巴分词，词向量也是直接载入内存，实际生产环境中分词与词向量获取是一个单独的服务。特别需要注意的是，输入的签名和数据必须与之前导出的模型相匹配，如图8所示。
-
-<div align="center">
-<img src="../images/8-From_Client_to_Server-color.png">
-<br>
-<em align="center">图8 从客户端到服务端</em>
-</div>
-
-```
-import numpy as np
+import json
+import tornado.ioloop
+import tornado.web
+import tensorflow as tf
 import jieba
 import tensorlayer as tl
-from grpc.beta import implementations
-import predict_pb2
-import prediction_service_pb2
+from packages import text_regularization as tr
+import numpy as np
+import requests
+
+
+print(" ".join(jieba.cut('分词初始化')))
+wv = tl.files.load_npy_to_any(name='../word2vec/output/model_word2vec_200.npy')
+
 
 def text_tensor(text, wv):
     """获取文本向量
@@ -141,10 +122,11 @@ def text_tensor(text, wv):
         text: 待检测文本
         wv: 词向量模型
     Returns:
-        [[[ 3.80905056   1.94315064  -0.20703495  -1.31589055   1.9627794
+        [[[ 3.80905056   2.94315064  -0.20703495  -2.31589055   2.9627794
            ...
            2.16935492   2.95426321  -4.71534014  -3.25034237 -11.28901672]]]
     """
+    text = tr.extractWords(text)
     words = jieba.cut(text.strip())
     text_sequence = []
     for word in words:
@@ -155,28 +137,11 @@ def text_tensor(text, wv):
     text_sequence = np.asarray(text_sequence)
     sample = text_sequence.reshape(1, len(text_sequence), 200)
     return sample
-
-print(" ".join(jieba.cut('分词初始化')))
-wv = tl.files.load_npy_to_any(
-    name='../word2vec/output/model_word2vec_200.npy')
-
-host, port = ('localhost', '9000')
-channel = implementations.insecure_channel(host, int(port))
-stub = prediction_service_pb2.beta_create_PredictionService_stub(channel)
-request = predict_pb2.PredictRequest()
-request.model_spec.name = 'antispam'
 ```
 
-`serving.py`负责接收和处理请求。生产环境中一般使用反向代理软件如Nginx实现负载均衡。这里我们演示直接监听80端口来提供HTTP服务。
-
+接下来定义请求处理类MainHandler负责接收和处理请求。生产环境中一般使用反向代理软件如Nginx实现负载均衡。这里我们演示直接监听80端口来提供HTTP服务。
 
 ```
-import json
-import tornado.ioloop
-import tornado.web
-import tensorflow as tf
-import engine
-
 class MainHandler(tornado.web.RequestHandler):
     """请求处理类
     """
@@ -188,7 +153,7 @@ class MainHandler(tornado.web.RequestHandler):
         predict = self.classify(text)
         data = {
             'text' : text,
-            'predict' : predict[0]
+            'predict' : str(predict[0])
         }
         self.write(json.dumps({'data': data}))
 
@@ -199,12 +164,23 @@ class MainHandler(tornado.web.RequestHandler):
         Returns:
             垃圾返回[0]，通过返回[1]
         """
-        sample = engine.text_tensor(text, engine.wv)
-        tensor_proto = tf.contrib.util.make_tensor_proto(
-            sample, shape=[1, len(sample[0]), 200])
-        engine.request.inputs['x'].CopyFrom(tensor_proto)
-        response = engine.stub.Predict(engine.request, 10.0) # 10s timeout
-        result = list(response.outputs['y'].int64_val)
+        sample = text_tensor(text, wv)
+        sample = np.array(sample, dtype=np.float32)
+        len = sample.shape[1]
+        sample = sample.reshape(len, 200)
+
+        sample = sample.reshape(1, len, 200)
+        data = json.dumps({
+            # "signature_name": "call",
+            "instances": sample.tolist()
+        })
+        headers = {"content-type": "application/json"}
+        json_response = requests.post(
+            'http://localhost:8501/v1/models/saved_model:predict',
+            data=data, headers=headers)
+
+        predictions = np.array(json.loads(json_response.text)['predictions'])
+        result = np.argmax(predictions, axis=-1)
         return result
 
 def make_app():
@@ -214,6 +190,7 @@ def make_app():
         (r"/predict", MainHandler),
     ])
 
+
 if __name__ == "__main__":
     app = make_app()
     app.listen(80)
@@ -221,12 +198,12 @@ if __name__ == "__main__":
     tornado.ioloop.IOLoop.current().start()
 ```
 
-如果是在本地启动服务，访问`http://127.0.0.1:8021/predict?text=加我微信xxxxx有福利`，可以看到如下结果。
+在运行上述代码后，如果是在本地启动服务，访问`http://127.0.0.1/predict?text=加我微信xxxxx有福利`，可以看到如下结果。
 
 ```
 {
     "data": {
-        "text": "加我微信xxxxx有福利",
+        "text": "\u52a0\u6211\u5fae\u4fe1xxxxx\u6709\u798f\u5229",
         "predict": 0
     }
 }
@@ -234,22 +211,3 @@ if __name__ == "__main__":
 
 成功识别出垃圾消息。
 
-### Centos7编译TensorFlow Serving
-
-如果遇到“tar (child): bzip2：无法 exec: 没有那个文件或目录”错误：
-
-```
-yum install bzip2
-```
-
-如果遇到“C++ compilation of rule '@curl//:curl' failed”错误：
-
-```
-touch /usr/include/stropts.h
-```
-
-如果启动serving.py时遇到“ModuleNotFoundError: No module named 'PyQt4'”：
-
-```
-yum install pyqt4
-```

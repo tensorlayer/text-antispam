@@ -15,7 +15,7 @@ for label in ["pass", "spam"]:
     samples = []
     inp = "data/msglog/msg" + label + ".log.seg"
     outp = "output/sample_seq_" + label
-    f = open(inp)
+    f = open(inp,encoding='utf-8')
     for line in f:
         words = line.strip().split(' ')
         text_sequence = []

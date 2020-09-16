@@ -1,27 +1,18 @@
-#! /usr/bin/env python3
-"""训练Convolutional Neural Network (CNN)分类器
-
-Convolutional Neural Networks for Sentence Classification: https://arxiv.org/pdf/1408.5882.pdf
-A Convolutional Neural Network for Modelling Sentences: https://arxiv.org/pdf/1404.2188.pdf
-
-"""
-
 import logging
 import math
 import os
-import sys
-import shutil
 import time
 import numpy as np
 import tensorflow as tf
 import tensorlayer as tl
-from tensorflow.python.saved_model import builder as saved_model_builder
-from tensorflow.python.saved_model import signature_constants
-from tensorflow.python.saved_model import signature_def_utils
-from tensorflow.python.saved_model import tag_constants
-from tensorflow.python.saved_model import utils
-from tensorflow.python.util import compat
 from sklearn.model_selection import train_test_split
+import h5py
+import json
+from tensorflow.python.util import serialization
+import tensorflow.keras as keras
+
+input_shape = None
+max_seq_len = 20
 
 
 def load_dataset(files, test_size=0.2):
@@ -38,7 +29,7 @@ def load_dataset(files, test_size=0.2):
     x = []
     y = []
     for file in files:
-        data = np.load(file)
+        data = np.load(file, allow_pickle=True)
         if x == [] or y == []:
             x = data['x']
             y = data['y']
@@ -50,194 +41,378 @@ def load_dataset(files, test_size=0.2):
     return x_train, y_train, x_test, y_test
 
 
-def network(x, keep=0.8):
+def get_model(inputs_shape, keep=0.5):
     """定义网络结构
     为了防止过拟合，我们在全连接层加了Dropout操作。参数keep决定了某一层神经元输出保留的比例。通过配置keep我们可以在训练的时候打开Dropout，在测试的时候关闭它。TensorFlow的tf.nn.dropout操作会自动根据keep调整激活的神经元的输出权重，使得我们无需在keep改变时手动调节输出权重。
     Args:
-        x: Input Placeholder
+        inputs_shape: 输入数据的shape
         keep: 全连接层输入神经元激活比例
             keep=1.0: 关闭Dropout
     Returns:
         network: 定义好的网络结构
     """
-    network = tl.layers.InputLayer(x, name='input_layer')
-    network = tl.layers.Conv1dLayer(network, act=tf.nn.relu, shape=[3, 200, 6], name ='cnn_layer1', padding='VALID')
-    network = tl.layers.MaxPool1d(network, filter_size=3, strides=3, name='pool_layer1')
-    network = tl.layers.FlattenLayer(network, name='flatten_layer')
-    network = tl.layers.DropoutLayer(network, keep=keep, name='drop1', is_fix=True)
-    network = tl.layers.DenseLayer(network, n_units=2,
-                act=tf.identity, name="output")
-    network.outputs_op = tf.argmax(tf.nn.softmax(network.outputs), 1)
-    return network
+    ni = tl.layers.Input(inputs_shape, name='input_layer')
+    nn = tl.layers.Conv1d(n_filter=6, filter_size=3, stride=2, in_channels=200, name='conv1d_1')(ni)
+    # nn = tl.layers.Conv1dLayer(act=tf.nn.relu, shape=[3, 200, 6], name='cnn_layer1', padding='VALID')(ni)
+    nn = tl.layers.MaxPool1d(filter_size=3, strides=3, name='pool_layer1')(nn)
+    nn = tl.layers.Flatten(name='flatten_layer')(nn)
+    nn = tl.layers.Dropout(keep=keep, name='drop1')(nn)
+    nn = tl.layers.Dense(n_units=2, act=tf.nn.relu, name="output")(nn)
+
+    model = tl.models.Model(inputs=ni, outputs=nn, name='cnn')
+    return model
 
 
-def load_checkpoint(sess, ckpt_file):
-    """恢复模型训练状态
-    必须在tf.global_variables_initializer()之后
+def accuracy(y_pred, y_true):
     """
-    index = ckpt_file + ".index"
-    meta  = ckpt_file + ".meta"
-    if os.path.isfile(index) and os.path.isfile(meta):
-        tf.train.Saver().restore(sess, ckpt_file)
-
-
-def save_checkpoint(sess, ckpt_file):
-    """保存模型训练状态
+    计算预测精准度accuracy
+    :param y_pred: 模型预测结果
+    :param y_true: 真实结果 ground truth
+    :return: 精准度acc
     """
-    path = os.path.dirname(os.path.abspath(ckpt_file))
-    if os.path.isdir(path) == False:
-        logging.warning('Path (%s) not exists, making directories...', path)
-        os.makedirs(path)
-    tf.train.Saver().save(sess, ckpt_file)
+    # Predicted class is the index of highest score in prediction vector (i.e. argmax).
+    correct_prediction = tf.equal(tf.argmax(y_pred, 1), tf.cast(y_true, tf.int64))
+    return tf.reduce_mean(tf.cast(correct_prediction, tf.float32), axis=-1)
 
 
-def train(sess, x, network):
-    """训练网络
-    Args:
-        sess: TensorFlow Session
-        x: Input placeholder
-        network: Network
-    """
-    learning_rate  = 0.1
-    n_classes      = 1 # linear sequence or not
-    y         = tf.placeholder(tf.int64, [None, ], name="labels")
-    cost      = tl.cost.cross_entropy(network.outputs, y, 'xentropy')
-    optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate).minimize(cost)
-    correct   = tf.equal(network.outputs_op, y)
-    accuracy  = tf.reduce_mean(tf.cast(correct, tf.float32))
+def train(model):
+    # 训练模型
+    learning_rate = 0.005
+    n_epoch = 100
+    batch_size = 128
+    display_step = 10
+    loss_vals = []
+    acc_vals = []
+    optimizer = tf.optimizers.Adam(learning_rate=learning_rate)
 
+    logging.info("batch_size: %d", batch_size)
+    logging.info("Start training the network...")
+
+    for epoch in range(n_epoch):
+        step = 0
+        total_step = math.ceil(len(x_train) / batch_size)
+
+        # 利用训练集训练
+        model.train()
+        for batch_x, batch_y in tl.iterate.minibatches(x_train, y_train, batch_size, shuffle=True):
+
+            start_time = time.time()
+            batch_y = batch_y.astype(np.int32)
+            for i, d in enumerate(batch_x):
+                batch_x[i] = batch_x[i][:max_seq_len]
+                batch_x[i] += [tf.convert_to_tensor(np.zeros(200), dtype=tf.float32) for i in
+                               range(max_seq_len - len(d))]
+                batch_x[i] = tf.convert_to_tensor(batch_x[i], dtype=tf.float32)
+            batch_x = list(batch_x)
+            batch_x = tf.convert_to_tensor(batch_x, dtype=tf.float32)
+
+            with tf.GradientTape() as tape:
+                _y = model(batch_x)
+                loss_val = tf.nn.sparse_softmax_cross_entropy_with_logits(batch_y, _y, name='train_loss')
+                loss_val = tf.reduce_mean(loss_val)
+            grad = tape.gradient(loss_val, model.trainable_weights)
+            optimizer.apply_gradients(zip(grad, model.trainable_weights))
+
+            loss_vals.append(loss_val)
+            acc_vals.append(accuracy(_y, batch_y))
+
+            if step + 1 == 1 or (step + 1) % display_step == 0:
+                logging.info("Epoch {}/{},Step {}/{}, took {}".format(epoch + 1, n_epoch, step, total_step,
+                                                                      time.time() - start_time))
+                loss = sum(loss_vals) / len(loss_vals)
+                acc = sum(acc_vals) / len(acc_vals)
+                del loss_vals[:]
+                del acc_vals[:]
+                logging.info("Minibatch Loss= " + "{:.6f}".format(loss) + ", Training Accuracy= " + "{:.5f}".format(acc))
+            step += 1
+
+        # 利用测试集评估
+        model.eval()
+        test_loss, test_acc, n_iter = 0, 0, 0
+        for batch_x, batch_y in tl.iterate.minibatches(x_test, y_test, batch_size, shuffle=True):
+            batch_y = batch_y.astype(np.int32)
+            for i, d in enumerate(batch_x):
+                batch_x[i] = batch_x[i][:max_seq_len]
+                batch_x[i] += [tf.convert_to_tensor(np.zeros(200), dtype=tf.float32) for i in
+                               range(max_seq_len - len(d))]
+                batch_x[i] = tf.convert_to_tensor(batch_x[i], dtype=tf.float32)
+            # ValueError: setting an array element with a sequence.
+            batch_x = list(batch_x)
+            batch_x = tf.convert_to_tensor(batch_x, dtype=tf.float32)
+
+            _y = model(batch_x)
+
+            loss_val = tf.nn.sparse_softmax_cross_entropy_with_logits(batch_y, _y, name='test_loss')
+            loss_val = tf.reduce_mean(loss_val)
+
+            test_loss += loss_val
+            test_acc += accuracy(_y, batch_y)
+            n_iter += 1
+        logging.info("   test loss: {}".format(test_loss / n_iter))
+        logging.info("   test acc:  {}".format(test_acc / n_iter))
+
+
+def layer_conv1d_translator(tl_layer, _input_shape=None):
+    args = tl_layer['args']
+    name = args['name']
+    filters = args['n_filter']
+    kernel_size = [args['filter_size']]
+    strides = [args['stride']]
+    padding = args['padding']
+    data_format = args['data_format']
+    dilation_rate = [args['dilation_rate']]
+    config = {'name': name, 'trainable': True, 'dtype': 'float32', 'filters': filters,
+              'kernel_size': kernel_size, 'strides': strides, 'padding': padding, 'data_format': data_format,
+              'dilation_rate': dilation_rate, 'activation': None, 'use_bias': True,
+              'kernel_initializer': {'class_name': 'GlorotUniform',
+                                     'config': {'seed': None}
+                                     },
+              'bias_initializer': {'class_name': 'Zeros',
+                                   'config': {}
+                                   },
+              'kernel_regularizer': None, 'bias_regularizer': None,
+              'activity_regularizer': None, 'kernel_constraint': None, 'bias_constraint': None}
+
+    if _input_shape is not None:
+        config['batch_input_shape'] = _input_shape
+    result = {'class_name': 'Conv1D', 'config': config}
+    return result
+
+
+def layer_maxpooling1d_translator(tl_layer, _input_shape=None):
+    args = tl_layer['args']
+    name = args['name']
+    pool_size = [args['filter_size']]
+    strides = [args['strides']]
+    padding = args['padding']
+    data_format = args['data_format']
+    config = {'name': name, 'trainable': True, 'dtype': 'float32', 'strides': strides, 'pool_size': pool_size,
+              'padding': padding, 'data_format': data_format}
+    if _input_shape is not None:
+        config['batch_input_shape'] = _input_shape
+    result = {'class_name': 'MaxPooling1D', 'config': config}
+    return result
+
+
+def layer_flatten_translator(tl_layer, _input_shape=None):
+    args = tl_layer['args']
+    name = args['name']
+
+    config = {'name': name, 'trainable': True, 'dtype': 'float32', 'data_format': 'channels_last'}
+    if _input_shape is not None:
+        config['batch_input_shape'] = _input_shape
+    result = {'class_name': 'Flatten', 'config': config}
+    return result
+
+
+def layer_dropout_translator(tl_layer, _input_shape=None):
+    args = tl_layer['args']
+    name = args['name']
+    rate = 1-args['keep']
+    config = {'name': name, 'trainable': True, 'dtype': 'float32', 'rate': rate, 'noise_shape': None, 'seed': None}
+    if _input_shape is not None:
+        config['batch_input_shape'] = _input_shape
+    result = {'class_name': 'Dropout', 'config': config}
+    return result
+
+
+def layer_dense_translator(tl_layer, _input_shape=None):
+    args = tl_layer['args']
+    name = args['name']
+    units = args['n_units']
+    config = {'name': name, 'trainable': True, 'dtype': 'float32', 'units': units, 'activation': 'relu', 'use_bias': True,
+              'kernel_initializer': {'class_name': 'GlorotUniform', 'config': {'seed': None}},
+              'bias_initializer': {'class_name': 'Zeros', 'config': {}},
+              'kernel_regularizer': None,
+              'bias_regularizer': None,
+              'activity_regularizer': None,
+              'kernel_constraint': None,
+              'bias_constraint': None}
+
+    if _input_shape is not None:
+        config['batch_input_shape'] = _input_shape
+    result = {'class_name': 'Dense', 'config': config}
+    return result
+
+
+def layer_rnn_translator(tl_layer, _input_shape=None):
+    args = tl_layer['args']
+    name = args['name']
+    cell = args['cell']
+    config = {'name': name, 'trainable': True, 'dtype': 'float32', 'return_sequences': False,
+              'return_state': False, 'go_backwards': False, 'stateful': False, 'unroll': False, 'time_major': False,
+              'cell': cell
+              }
+    if _input_shape is not None:
+        config['batch_input_shape'] = _input_shape
+    result = {'class_name': 'RNN', 'config': config}
+    return result
+
+
+def layer_translator(tl_layer, is_first_layer=False):
+    _input_shape = None
+    global input_shape
+    if is_first_layer:
+        _input_shape = input_shape
+    if tl_layer['class'] == '_InputLayer':
+        input_shape = tl_layer['args']['shape']
+    elif tl_layer['class'] == 'Conv1d':
+        return layer_conv1d_translator(tl_layer, _input_shape)
+    elif tl_layer['class'] == 'MaxPool1d':
+        return layer_maxpooling1d_translator(tl_layer, _input_shape)
+    elif tl_layer['class'] == 'Flatten':
+        return layer_flatten_translator(tl_layer, _input_shape)
+    elif tl_layer['class'] == 'Dropout':
+        return layer_dropout_translator(tl_layer, _input_shape)
+    elif tl_layer['class'] == 'Dense':
+        return layer_dense_translator(tl_layer, _input_shape)
+    elif tl_layer['class'] == 'RNN':
+        return layer_rnn_translator(tl_layer, _input_shape)
+    return None
+
+
+def config_translator(f_tl, f_k):
+    tl_model_config = f_tl.attrs['model_config'].decode('utf8')
+    tl_model_config = eval(tl_model_config)
+    tl_model_architecture = tl_model_config['model_architecture']
+
+    k_layers = []
+    for key, tl_layer in enumerate(tl_model_architecture):
+        if key == 1:
+            k_layer = layer_translator(tl_layer, is_first_layer=True)
+        else:
+            k_layer = layer_translator(tl_layer)
+        if k_layer is not None:
+            k_layers.append(k_layer)
+    f_k.attrs['model_config'] = json.dumps({'class_name': 'Sequential',
+                                            'config': {'name': 'sequential', 'layers': k_layers},
+                                            'build_input_shape': input_shape},
+                                           default=serialization.get_json_type).encode('utf8')
+    f_k.attrs['backend'] = keras.backend.backend().encode('utf8')
+    f_k.attrs['keras_version'] = str(keras.__version__).encode('utf8')
+
+    # todo: translate the 'training_config'
+    training_config = {'loss': {'class_name': 'SparseCategoricalCrossentropy',
+                                'config': {'reduction': 'auto', 'name': 'sparse_categorical_crossentropy',
+                                           'from_logits': False}},
+                       'metrics': ['accuracy'], 'weighted_metrics': None, 'loss_weights': None, 'sample_weight_mode': None,
+                       'optimizer_config': {'class_name': 'Adam',
+                                            'config': {'name': 'Adam', 'learning_rate': 0.01, 'decay': 0.0,
+                                                       'beta_1': 0.9, 'beta_2': 0.999, 'epsilon': 1e-07, 'amsgrad': False
+                                                       }
+                                            }
+                       }
+
+    f_k.attrs['training_config'] = json.dumps(training_config, default=serialization.get_json_type).encode('utf8')
+
+
+def weights_translator(f_tl, f_k):
+    # todo: delete inputlayer
+    if 'model_weights' not in f_k.keys():
+        f_k_model_weights = f_k.create_group('model_weights')
+    else:
+        f_k_model_weights = f_k['model_weights']
+    for key in f_tl.keys():
+        if key not in f_k_model_weights.keys():
+            f_k_model_weights.create_group(key)
+        try:
+            f_tl_para = f_tl[key][key]
+        except KeyError:
+            pass
+        else:
+            if key not in f_k_model_weights[key].keys():
+                f_k_model_weights[key].create_group(key)
+            weight_names = []
+            f_k_para = f_k_model_weights[key][key]
+            # todo：对RNN层的weights进行通用适配
+            cell_name = ''
+            if key == 'rnn_1':
+                cell_name = 'lstm_cell'
+                f_k_para.create_group(cell_name)
+                f_k_para = f_k_para[cell_name]
+                f_k_model_weights.create_group('masking')
+                f_k_model_weights['masking'].attrs['weight_names'] = []
+            for k in f_tl_para:
+                if k == 'biases:0' or k == 'bias:0':
+                    weight_name = 'bias:0'
+                elif k == 'filters:0' or k == 'weights:0' or k == 'kernel:0':
+                    weight_name = 'kernel:0'
+                elif k == 'recurrent_kernel:0':
+                    weight_name = 'recurrent_kernel:0'
+                else:
+                    raise Exception("cant find the parameter '{}' in tensorlayer".format(k))
+                if weight_name in f_k_para:
+                    del f_k_para[weight_name]
+                f_k_para.create_dataset(name=weight_name, data=f_tl_para[k][:],
+                                                           shape=f_tl_para[k].shape)
+                # todo：对RNN层的weights进行通用适配
+                if key == 'rnn_1':
+                    weight_names.append('{}/{}/{}'.format(key, cell_name, weight_name).encode('utf8'))
+                else:
+                    weight_names.append('{}/{}'.format(key, weight_name).encode('utf8'))
+
+            weight_names.reverse()  # todo: 临时解决了参数顺序和keras不一致的问题
+            f_k_model_weights[key].attrs['weight_names'] = weight_names
+    f_k_model_weights.attrs['backend'] = keras.backend.backend().encode('utf8')
+    f_k_model_weights.attrs['keras_version'] = str(keras.__version__).encode('utf8')
+    f_k_model_weights.attrs['layer_names'] = [key.encode('utf8') for key in f_tl.keys()]
+
+
+def translator_tl2_keras_h5(_tl_h5_path, _keras_h5_path):
+    f_tl_ = h5py.File(_tl_h5_path, 'r+')
+    f_k_ = h5py.File(_keras_h5_path, 'a')
+    f_k_.clear()
+    weights_translator(f_tl_, f_k_)
+    config_translator(f_tl_, f_k_)
+    f_tl_.close()
+    f_k_.close()
+
+
+def format_convert(x, y):
+    y = y.astype(np.int32)
+    for i, d in enumerate(x):
+        x[i] = x[i][:max_seq_len]
+        x[i] += [tf.convert_to_tensor(np.zeros(200), dtype=tf.float32) for i in range(max_seq_len - len(d))]
+        x[i] = tf.convert_to_tensor(x[i], dtype=tf.float32)
+    x = list(x)
+    x = tf.convert_to_tensor(x, dtype=tf.float32)
+    return x, y
+
+
+if __name__ == '__main__':
+
+    # 定义log格式
+    fmt = "%(asctime)s %(levelname)s %(message)s"
+    logging.basicConfig(format=fmt, level=logging.INFO)
+
+    # 加载数据
     x_train, y_train, x_test, y_test = load_dataset(
         ["../word2vec/output/sample_seq_pass.npz",
          "../word2vec/output/sample_seq_spam.npz"])
 
-    # initialize 必须在所有network和operation都定义完成之后
-    # 在network定义之前initialize会报错：
-    # FailedPreconditionError (see above for traceback): Attempting to use uninitialized value relu1/W
-    #      [[Node: relu1/W/read = Identity[T=DT_FLOAT, _class=["loc:@relu1/W"], _device="/job:localhost/replica:0/task:0/gpu:0"](relu1/W)]]
-    # 在optimizer定义之前initialize会报错：
-    # FailedPreconditionError (see above for traceback): Attempting to use uninitialized value beta1_power
-    #      [[Node: beta1_power/read = Identity[T=DT_FLOAT, _class=["loc:@relu1/W"], _device="/job:localhost/replica:0/task:0/gpu:0"](beta1_power)]]
-    sess.run(tf.global_variables_initializer())
-    load_checkpoint(sess, ckpt_file)
+    # 构建模型
+    model = get_model(inputs_shape=[None, 20, 200])
 
-    n_epoch      = 50
-    batch_size   = 128
-    display_step = 100
-    global max_seq_len
-    logging.info("batch_size: %d", batch_size)
-    logging.info("Start training the network...")
-    for epoch in range(n_epoch):
-        step = 0
-        total_step = math.ceil(len(x_train) / batch_size)
-        for batch_x, batch_y in tl.iterate.minibatches(x_train, y_train, batch_size, shuffle=True):
-            start_time = time.time()
-            for i,d in enumerate(batch_x):
-                batch_x[i] = batch_x[i][:max_seq_len]
-                batch_x[i] += [np.zeros(200) for i in range(max_seq_len - len(d))]
-            # ValueError: setting an array element with a sequence.
-            batch_x = list(batch_x)
+    # 开始训练
+    train(model)
+    logging.info("Optimization Finished!")
 
-            feed_dict = {x: batch_x, y: batch_y}
-            sess.run(optimizer, feed_dict)
-            if step + 1 == 1 or (step + 1) % display_step == 0:
-                logging.info("Epoch %d/%d Step %d/%d of %d took %fs", epoch + 1, n_epoch, step, total_step, n_epoch, time.time() - start_time)
-                loss = sess.run(cost, feed_dict=feed_dict)
-                acc  = sess.run(accuracy, feed_dict=feed_dict)
-                logging.info("Minibatch Loss= " + "{:.6f}".format(loss) + ", Training Accuracy= " + "{:.5f}".format(acc))
-                save_checkpoint(sess, ckpt_file)
-            step += 1
+    # h5保存和转译
+    model_dir = './model_h5'
+    if not os.path.exists(model_dir):
+        os.mkdir(model_dir)
+    tl_h5_path = model_dir + '/model_cnn_tl.hdf5'
+    keras_h5_path = model_dir + '/model_cnn_tl2k.hdf5'
+    tl.files.save_hdf5_graph(network=model, filepath=tl_h5_path, save_weights=True)
+    translator_tl2_keras_h5(tl_h5_path, keras_h5_path)
 
-        # 计算测试集准确率
-        test_data  = x_test
-        test_label = y_test
-        # max_seq_len = max([len(d) for d in test_data])
-        for i,d in enumerate(test_data):
-            test_data[i] = test_data[i][:max_seq_len]
-            test_data[i] += [np.zeros(200) for i in range(max_seq_len - len(d))]
-        test_data = list(test_data)
-        logging.info("Testing Accuracy: %f", sess.run(accuracy, feed_dict={x: test_data, y: test_label}))
+    # 读取模型
+    new_model = keras.models.load_model(keras_h5_path)
+    x_test, y_test = format_convert(x_test, y_test)
+    score = new_model.evaluate(x_test, y_test, batch_size=128)
 
+    # 保存SavedModel可部署文件
+    saved_model_version = 1
+    saved_model_path = "./saved_models/cnn/"
+    tf.saved_model.save(new_model, saved_model_path + str(saved_model_version))
 
-def export(model_version, model_dir, sess, x, y_op):
-    """导出tensorflow_serving可用的模型
-    SavedModel（tensorflow.python.saved_model）提供了一种跨语言格式来保存和恢复训练后的TensorFlow模型。它使用方法签名来定义Graph的输入和输出，使上层系统能够更方便地生成、调用或转换TensorFlow模型。
-    SavedModelBuilder类提供保存Graphs、Variables及Assets的方法。所保存的Graphs必须标注用途标签。在这个实例中我们打算将模型用于服务而非训练，因此我们用SavedModel预定义好的tag_constant.Serving标签。
-    为了方便地构建签名，SavedModel提供了signature_def_utils API。我们通过signature_def_utils.build_signature_def()来构建predict_signature。一个predict_signature至少包含以下参数：
-    * inputs  = {'x': tensor_info_x} 指定输入的tensor信息
-    * outputs = {'y': tensor_info_y} 指定输出的tensor信息
-    * method_name = signature_constants.PREDICT_METHOD_NAME
-    method_name定义方法名，它的值应该是tensorflow/serving/predict、tensorflow/serving/classify和tensorflow/serving/regress三者之一。Builder标签用来明确Meta Graph被加载的方式，只接受serve和train两种类型。
-    """
-    if model_version <= 0:
-        logging.warning('Please specify a positive value for version number.')
-        sys.exit()
-
-    path = os.path.dirname(os.path.abspath(model_dir))
-    if os.path.isdir(path) == False:
-        logging.warning('Path (%s) not exists, making directories...', path)
-        os.makedirs(path)
-
-    export_path = os.path.join(
-        compat.as_bytes(model_dir),
-        compat.as_bytes(str(model_version)))
-
-    if os.path.isdir(export_path) == True:
-        logging.warning('Path (%s) exists, removing directories...', export_path)
-        shutil.rmtree(export_path)
-
-    builder = saved_model_builder.SavedModelBuilder(export_path)
-    tensor_info_x = utils.build_tensor_info(x)
-    tensor_info_y = utils.build_tensor_info(y_op)
-
-    prediction_signature = signature_def_utils.build_signature_def(
-        inputs={'x': tensor_info_x},
-        outputs={'y': tensor_info_y},
-        # signature_constants.CLASSIFY_METHOD_NAME = "tensorflow/serving/classify"
-        # signature_constants.PREDICT_METHOD_NAME  = "tensorflow/serving/predict"
-        # signature_constants.REGRESS_METHOD_NAME  = "tensorflow/serving/regress"
-        # 如果缺失method_name会报错：
-        # grpc.framework.interfaces.face.face.AbortionError: AbortionError(code=StatusCode.INTERNAL, details="Expected prediction signature method_name to be one of {tensorflow/serving/predict, tensorflow/serving/classify, tensorflow/serving/regress}. Was: ")
-        method_name=signature_constants.PREDICT_METHOD_NAME)
-
-    builder.add_meta_graph_and_variables(
-        sess,
-        # tag_constants.SERVING  = "serve"
-        # tag_constants.TRAINING = "train"
-        # 如果只有train标签，TensorFlow Serving加载时会报错：
-        # E tensorflow_serving/core/aspired_versions_manager.cc:351] Servable {name: default version: 2} cannot be loaded: Not found: Could not find meta graph def matching supplied tags.
-        [tag_constants.SERVING],
-        signature_def_map={
-            'predict_text': prediction_signature,
-            # 如果缺失会报错：
-            # grpc.framework.interfaces.face.face.AbortionError: AbortionError(code=StatusCode.FAILED_PRECONDITION, details="Default serving signature key not found.")
-            signature_constants.DEFAULT_SERVING_SIGNATURE_DEF_KEY: prediction_signature
-        })
-
-    builder.save()
-
-
-if __name__ == '__main__':
-    fmt = "%(asctime)s %(levelname)s %(message)s"
-    logging.basicConfig(format=fmt, level=logging.INFO)
-
-    ckpt_file = "./cnn_checkpoint/cnn.ckpt"
-    max_seq_len = 20
-    x = tf.placeholder("float", [None, max_seq_len, 200], name="inputs")
-    sess = tf.InteractiveSession()
-
-    flags = tf.flags
-    flags.DEFINE_string("mode", "train", "train or export")
-    FLAGS = flags.FLAGS
-
-    if FLAGS.mode == "train":
-        network = network(x)
-        train(sess, x, network)
-        logging.info("Optimization Finished!")
-    elif FLAGS.mode == "export":
-        model_version = 1
-        model_dir    = "./output/cnn_model"
-        network = network(x, keep=1.0)
-        sess.run(tf.global_variables_initializer())
-        load_checkpoint(sess, ckpt_file)
-        export(model_version, model_dir, sess, x, network.outputs_op)
-        logging.info("Servable Export Finishied!")

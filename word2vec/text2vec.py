@@ -16,7 +16,7 @@ for label in ["pass", "spam"]:
     embeddings = []
     inp = "data/msglog/msg" + label + ".log.seg"
     outp = "output/sample_" + label
-    f = open(inp)
+    f = open(inp, encoding='utf-8')
     for line in f:
         words = line.strip().split(' ')
         text_embedding = np.zeros(200)
