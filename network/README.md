@@ -43,6 +43,12 @@ def get_model(inputs_shape):
     model = tl.models.Model(inputs=ni, outputs=nn, name='rnn')
     return model
 ```
+运行RNN发现它的准确率要明显低于mlp和CNN，不到90%，这并不符合RNN在文本分类领域应有的表现。经研究发现该问题与sequence length参数的丢失有关。sequence length是一个表示文本长度的参数，根据Tensorlayer官网的解释，如果在RNN.forward中传入sequence length，RNN就是动态RNN；反之则是静态RNN。
+引发sequence length丢失的源头在Tensorlayer的计算图中。通过查看源代码发现，计算图在正向传播的过程当中，仅能捕捉文本数据作为input和output（也就是机器学习领域普遍称呼的X），并不能捕捉其他参数，由此也导致了sequence length的丢失。
+<img src="../images/11-Computation_Graph_Bug.png">
+
+针对该问题，最直接的解决办法是在RNN.forward方法下计算sequence length。当然这种改法只是Text Antispam这一个项目的权宜之计，仍然需要Tensorlayer作者妥善修改源代码来实现完美的解决方案。
+<img src="../images/12-RNN_Forward_Modified.png">
 
 ##### MLP分类器
 前文提到过，分类器还可以用NBOW+MLP（如图5所示）和CNN来实现。借助TensorLayer，我们可以很方便地重组网络。下面简单介绍这两种网络的结构及其实现。
