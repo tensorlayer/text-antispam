@@ -12,6 +12,7 @@ from tensorflow.python.util import serialization
 import tensorflow.keras as keras
 
 # import the modified recurrent file to set up RNN
+# uncomment the code below if you want to apply TL official recurrent module
 import recurrent_mod as rm
 
 
