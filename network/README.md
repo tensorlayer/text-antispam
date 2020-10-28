@@ -4,7 +4,6 @@
 python3 rnn_classifier.py
 ```
 
-
 ### 训练MLP分类器并导出Servable
 
 ```
@@ -16,16 +15,39 @@ python3 mlp_classifier.py
 ```
 python3 cnn_classifier.py
 ```
-#### 模型构建
- 为了防止过拟合，我们在全连接层加了Dropout操作。参数keep决定了某一层神经元输出保留的比例。通过配置keep我们可以在训练的时候打开Dropout，在测试的时候关闭它。TensorFlow的tf.nn.dropout操作会自动根据keep调整激活的神经元的输出权重，使得我们无需在keep改变时手动调节输出权重。
-##### RNN分类器
-图4演示了Dynamic RNN分类器的训练过程，Sequence 1、2、3作为一个Batch输入到网络中，这个Batch最长的长度是6，因此左方RNN Graph展开后如右方所示是一个有着6个隐层的网络，每一层的输出会和下一个词一起作为输入进入到下一层。第1个序列的长度为6，因此我们取第6个输出作为这个序列的Embedding输入到Softmax层进行分类。第2个序列的长度为3，因此我们在计算到第3个输出时就停止计算，取第3个输出作为这个序列的Embedding输入到Softmax层进行后续的计算。依此类推，第3个序列取第5个输出作为Softmax层的输入，完成一次前向与后向传播。
+#### RNN模型构建
+##### 训练分类器
+我们使用Dynamic RNN实现不定长文本序列分类。首先加载数据，通过`sklearn`库的`train_test_split`方法将样本按照要求的比例切分成训练集和测试集。
 
-<div align="center">
-<img src="../images/3-Dynamic_RNN-color.png">
-<br>
-<em align="center">图4 Dynamic RNN训练过程</em>
-</div>
+```python
+def load_dataset(files, test_size=0.2):
+    """加载样本并取test_size的比例做测试集
+    Args:
+        files: 样本文件目录集合
+            样本文件是包含了样本特征向量与标签的npy文件
+        test_size: float
+            0.0到1.0之间，代表数据集中有多少比例抽做测试集
+    Returns:
+        X_train, y_train: 训练集特征列表和标签列表
+        X_test, y_test: 测试集特征列表和标签列表
+    """
+    x = []
+    y = []
+    for file in files:
+        data = np.load(file, allow_pickle=True)
+        if x == [] or y == []:
+            x = data['x']
+            y = data['y']
+        else:
+            x = np.append(x, data['x'], axis=0)
+            y = np.append(y, data['y'], axis=0)
+
+    x_train, x_test, y_train, y_test = train_test_split(x, y, test_size=test_size)
+    return x_train, y_train, x_test, y_test
+```
+
+为了防止过拟合，我们对DynamicRNNLayer的输入与输出都做了Dropout操作。参数`keep`决定了输入或输出的保留比例。通过配置`keep`参数我们可以在训练的时候打开Dropout，在服务的时候关闭它。TensorFlow的`tf.nn.dropout`操作会根据`keep`值自动调整激活的神经元的输出权重，使得我们无须在`keep`改变时手动调节输出权重。
+
 ```python
 def get_model(inputs_shape):
     """定义网络结构
@@ -43,14 +65,309 @@ def get_model(inputs_shape):
     model = tl.models.Model(inputs=ni, outputs=nn, name='rnn')
     return model
 ```
-运行RNN发现它的准确率要明显低于mlp和CNN，不到90%，这并不符合RNN在文本分类领域应有的表现。经研究发现该问题与sequence length参数的丢失有关。sequence length是一个表示文本长度的参数，根据Tensorlayer官网的解释，如果在RNN.forward中传入sequence length，RNN就是动态RNN；反之则是静态RNN。
-引发sequence length丢失的源头在Tensorlayer的计算图中。通过查看源代码发现，计算图在正向传播的过程当中，仅能捕捉文本数据作为input和output（也就是机器学习领域普遍称呼的X），并不能捕捉其他参数，由此也导致了sequence length的丢失。
-<img src="../images/11-Computation_Graph_Bug.png">
+例子中每一次迭代，我们给网络输入128条文本序列。根据预测与标签的差异，网络不断优化权重，减少损失，逐步提高分类的准确率。
 
-针对该问题，最直接的解决办法是在RNN.forward方法下计算sequence length。当然这种改法只是Text Antispam这一个项目的权宜之计，仍然需要Tensorlayer作者妥善修改源代码来实现完美的解决方案。
-<img src="../images/12-RNN_Forward_Modified.png">
+```python
+def train(model):
+    # 开始训练
+    learning_rate = 0.001
+    n_epoch = 50
+    batch_size = 128
+    display_step = 10
+    loss_vals = []
+    acc_vals = []
+    optimizer = tf.optimizers.Nadam(learning_rate=learning_rate)
+
+    logging.info("batch_size: %d", batch_size)
+    logging.info("Start training the network...")
+
+    for epoch in range(n_epoch):
+        step = 0
+        total_step = math.ceil(len(x_train) / batch_size)
+
+        # 利用训练集训练
+        model.train()
+        for batch_x, batch_y in tl.iterate.minibatches(x_train, y_train, batch_size, shuffle=True):
+
+            start_time = time.time()
+            # temp = copy.deepcopy(batch_x)
+            max_seq_len = max([len(d) for d in batch_x])
+            batch_y = batch_y.astype(np.int32)
+            for i, d in enumerate(batch_x):
+                batch_x[i] += [tf.convert_to_tensor(np.zeros(200), dtype=tf.float32) for i in
+                               range(max_seq_len - len(d))]
+                batch_x[i] = tf.convert_to_tensor(batch_x[i], dtype=tf.float32)
+            batch_x = list(batch_x)
+            batch_x = tf.convert_to_tensor(batch_x, dtype=tf.float32)
+            # sequence_length = tl.layers.retrieve_seq_length_op3(batch_x, pad_val=masking_val)
+
+            with tf.GradientTape() as tape:
+                _y = model(batch_x)
+                loss_val = tf.nn.sparse_softmax_cross_entropy_with_logits(batch_y, _y, name='train_loss')
+                loss_val = tf.reduce_mean(loss_val)
+            grad = tape.gradient(loss_val, model.trainable_weights)
+            optimizer.apply_gradients(zip(grad, model.trainable_weights))
+
+            loss_vals.append(loss_val)
+            acc_vals.append(accuracy(_y, batch_y))
+
+            if step + 1 == 1 or (step + 1) % display_step == 0:
+                logging.info("Epoch {}/{},Step {}/{}, took {}".format(epoch + 1, n_epoch, step, total_step,
+                                                                      time.time() - start_time))
+                loss = sum(loss_vals) / len(loss_vals)
+                acc = sum(acc_vals) / len(acc_vals)
+                del loss_vals[:]
+                del acc_vals[:]
+                logging.info(
+                    "Minibatch Loss= " + "{:.6f}".format(loss) + ", Training Accuracy= " + "{:.5f}".format(acc))
+            step += 1
+
+        # 利用测试集评估
+        model.eval()
+        test_loss, test_acc, n_iter = 0, 0, 0
+        for batch_x, batch_y in tl.iterate.minibatches(x_test, y_test, batch_size, shuffle=True):
+            batch_y = batch_y.astype(np.int32)
+            max_seq_len = max([len(d) for d in batch_x])
+            for i, d in enumerate(batch_x):
+                batch_x[i] += [tf.convert_to_tensor(np.zeros(200), dtype=tf.float32) for i in
+                               range(max_seq_len - len(d))]
+                batch_x[i] = tf.convert_to_tensor(batch_x[i], dtype=tf.float32)
+            # ValueError: setting an array element with a sequence.
+            batch_x = list(batch_x)
+            batch_x = tf.convert_to_tensor(batch_x, dtype=tf.float32)
+
+            _y = model(batch_x)
+
+            loss_val = tf.nn.sparse_softmax_cross_entropy_with_logits(batch_y, _y, name='test_loss')
+            loss_val = tf.reduce_mean(loss_val)
+
+            test_loss += loss_val
+            test_acc += accuracy(_y, batch_y)
+            n_iter += 1
+        logging.info("   test loss: {}".format(test_loss / n_iter))
+        logging.info("   test acc:  {}".format(test_acc / n_iter))
+```
+
+在模型训练到16个epoch之后，训练集与测试集的准确率都从最开始的50%左右上升到了95%以上。
+
+<div align="center">
+<img src="../images/12-RNN-Train-Result.png">
+<br>
+<em align="center">图5 NBOW+MLP分类器</em>
+</div>
+
+##### 模型导出
+
+TensorFlow提供了SavedModel这一格式专门用于保存可在多平台部署的文件，然而在TensorFlow2这一版本中，用于保存SavedModel的方法`tf.saved_model.save`仅支持对Trackable对象的模型导出。由于Trackable在Tensorflow2中是keras.model的父类，而TensorLayer构建的model不继承Trackable类，因此我们构建的model无法用`tf.saved_model.save`导出可部署文件。
+
+在这里，我们的解决思路是先将TensorLayer模型保存为hdf5文件，再设计一套转译机制，将该hdf5文件转成tf.keras可以读取的形式，然后再由`tf.saved_model.save`方法进行模型导出。
+
+hdf5文件从TensorLayer到keras的转译，被分为weights和config两部分。
+
+```python
+def translator_tl2_keras_h5(_tl_h5_path, _keras_h5_path):
+    f_tl_ = h5py.File(_tl_h5_path, 'r+')
+    f_k_ = h5py.File(_keras_h5_path, 'a')
+    f_k_.clear()
+    weights_translator(f_tl_, f_k_)
+    config_translator(f_tl_, f_k_)
+    f_tl_.close()
+    f_k_.close()
+```
+
+weights_translator将训练过程中学习到的权重(例如bias和kernel)进行转译。
+
+```python
+def weights_translator(f_tl, f_k):
+    # todo: delete inputlayer
+    if 'model_weights' not in f_k.keys():
+        f_k_model_weights = f_k.create_group('model_weights')
+    else:
+        f_k_model_weights = f_k['model_weights']
+    for key in f_tl.keys():
+        if key not in f_k_model_weights.keys():
+            f_k_model_weights.create_group(key)
+        try:
+            f_tl_para = f_tl[key][key]
+        except KeyError:
+            pass
+        else:
+            if key not in f_k_model_weights[key].keys():
+                f_k_model_weights[key].create_group(key)
+            weight_names = []
+            f_k_para = f_k_model_weights[key][key]
+            cell_name = ''
+            if key == 'rnn_1':
+                cell_name = 'lstm_cell'
+                f_k_para.create_group(cell_name)
+                f_k_para = f_k_para[cell_name]
+                f_k_model_weights.create_group('masking')
+                f_k_model_weights['masking'].attrs['weight_names'] = []
+            for k in f_tl_para:
+                if k == 'biases:0' or k == 'bias:0':
+                    weight_name = 'bias:0'
+                elif k == 'filters:0' or k == 'weights:0' or k == 'kernel:0':
+                    weight_name = 'kernel:0'
+                elif k == 'recurrent_kernel:0':
+                    weight_name = 'recurrent_kernel:0'
+                else:
+                    raise Exception("cant find the parameter '{}' in tensorlayer".format(k))
+                if weight_name in f_k_para:
+                    del f_k_para[weight_name]
+                f_k_para.create_dataset(name=weight_name, data=f_tl_para[k][:],
+                                                           shape=f_tl_para[k].shape)
+                # todo：对RNN层的weights进行通用适配
+                if key == 'rnn_1':
+                    weight_names.append('{}/{}/{}'.format(key, cell_name, weight_name).encode('utf8'))
+                else:
+                    weight_names.append('{}/{}'.format(key, weight_name).encode('utf8'))
+
+            weight_names.reverse()  # todo: 临时解决了参数顺序和keras不一致的问题
+            f_k_model_weights[key].attrs['weight_names'] = weight_names
+    f_k_model_weights.attrs['backend'] = keras.backend.backend().encode('utf8')
+    f_k_model_weights.attrs['keras_version'] = str(keras.__version__).encode('utf8')
+    f_k_model_weights.attrs['layer_names'] = [key.encode('utf8') for key in f_tl.keys()]
+```
+
+config_translator转译了模型的config信息，包括了模型的结构，和训练过程中的loss，metrics，optimizer等信息。
+
+```PYTHON
+def config_translator(f_tl, f_k):
+    tl_model_config = f_tl.attrs['model_config'].decode('utf8')
+    tl_model_config = eval(tl_model_config)
+    tl_model_architecture = tl_model_config['model_architecture']
+
+    k_layers = []
+    for key, tl_layer in enumerate(tl_model_architecture):
+        if key == 1:
+            k_layer = layer_translator(tl_layer, is_first_layer=True)
+        else:
+            k_layer = layer_translator(tl_layer)
+        if k_layer is not None:
+            k_layers.append(k_layer)
+    f_k.attrs['model_config'] = json.dumps({'class_name': 'Sequential',
+                                            'config': {'name': 'sequential', 'layers': k_layers},
+                                            'build_input_shape': input_shape},
+                                           default=serialization.get_json_type).encode('utf8')
+    f_k.attrs['backend'] = keras.backend.backend().encode('utf8')
+    f_k.attrs['keras_version'] = str(keras.__version__).encode('utf8')
+
+    # todo: translate the 'training_config'
+    training_config = {'loss': {'class_name': 'SparseCategoricalCrossentropy',
+                                'config': {'reduction': 'auto', 'name': 'sparse_categorical_crossentropy',
+                                           'from_logits': False}},
+                       'metrics': ['accuracy'], 'weighted_metrics': None, 'loss_weights': None, 'sample_weight_mode': None,
+                       'optimizer_config': {'class_name': 'Adam',
+                                            'config': {'name': 'Adam', 'learning_rate': 0.01, 'decay': 0.0,
+                                                       'beta_1': 0.9, 'beta_2': 0.999, 'epsilon': 1e-07, 'amsgrad': False
+                                                       }
+                                            }
+                       }
+
+    f_k.attrs['training_config'] = json.dumps(training_config, default=serialization.get_json_type).encode('utf8')
+```
+
+TensorLayer和keras的模型在保存config时，都是以layer为单位分别保存，于是在translate时，我们按照每个层的类型进行逐层转译。
+
+```PYTHON
+def layer_translator(tl_layer, is_first_layer=False):
+    _input_shape = None
+    global input_shape
+    if is_first_layer:
+        _input_shape = input_shape
+    if tl_layer['class'] == '_InputLayer':
+        input_shape = tl_layer['args']['shape']
+    elif tl_layer['class'] == 'Conv1d':
+        return layer_conv1d_translator(tl_layer, _input_shape)
+    elif tl_layer['class'] == 'MaxPool1d':
+        return layer_maxpooling1d_translator(tl_layer, _input_shape)
+    elif tl_layer['class'] == 'Flatten':
+        return layer_flatten_translator(tl_layer, _input_shape)
+    elif tl_layer['class'] == 'Dropout':
+        return layer_dropout_translator(tl_layer, _input_shape)
+    elif tl_layer['class'] == 'Dense':
+        return layer_dense_translator(tl_layer, _input_shape)
+    elif tl_layer['class'] == 'RNN':
+        return layer_rnn_translator(tl_layer, _input_shape)
+    return None
+```
+
+以rnn层为例，我们设计了其config的转译方法。
+
+```PYTHON
+def layer_rnn_translator(tl_layer, _input_shape=None):
+    args = tl_layer['args']
+    name = args['name']
+    cell = args['cell']
+    config = {'name': name, 'trainable': True, 'dtype': 'float32', 'return_sequences': False,
+              'return_state': False, 'go_backwards': False, 'stateful': False, 'unroll': False, 'time_major': False,
+              'cell': cell
+              }
+    if _input_shape is not None:
+        config['batch_input_shape'] = _input_shape
+    result = {'class_name': 'RNN', 'config': config}
+    return result
+```
+
+按照main函数的顺序，分类器完成了训练和导出模型的全部步骤。
+
+```python
+if __name__ == '__main__':
+
+    # 定义log格式
+    fmt = "%(asctime)s %(levelname)s %(message)s"
+    logging.basicConfig(format=fmt, level=logging.INFO)
+
+    # 加载数据
+    x_train, y_train, x_test, y_test = load_dataset(
+        ["../word2vec/output/sample_seq_pass.npz",
+         "../word2vec/output/sample_seq_spam.npz"])
+
+    # 构建模型
+    model = get_model(inputs_shape=[None, 20, 200])
+
+    # 开始训练
+    train(model)
+    logging.info("Optimization Finished!")
+
+    # h5保存和转译
+    model_dir = './model_h5'
+    if not os.path.exists(model_dir):
+        os.mkdir(model_dir)
+    tl_h5_path = model_dir + '/model_cnn_tl.hdf5'
+    keras_h5_path = model_dir + '/model_cnn_tl2k.hdf5'
+    tl.files.save_hdf5_graph(network=model, filepath=tl_h5_path, save_weights=True)
+    translator_tl2_keras_h5(tl_h5_path, keras_h5_path)
+
+    # 读取模型
+    new_model = keras.models.load_model(keras_h5_path)
+    x_test, y_test = format_convert(x_test, y_test)
+    score = new_model.evaluate(x_test, y_test, batch_size=128)
+
+    # 保存SavedModel可部署文件
+    saved_model_version = 1
+    saved_model_path = "./saved_models/cnn/"
+    tf.saved_model.save(new_model, saved_model_path + str(saved_model_version))
+```
+
+最终我们将在`./saved_models/rnn`目录下看到导出模型的每个版本，实例中`model_version`被设置为1，因此创建了相应的子目录`./saved_models/rnn/1`。
+
+SavedModel目录具有以下结构。
+
+```
+assets/
+variables/
+    variables.data-?????-of-?????
+    variables.index
+saved_model.pb
+```
+
+导出的模型在TensorFlow Serving中又被称为Servable，其中`saved_model.pb`保存了接口的数据交换格式，`variables`保存了模型的网络结构和参数，`assets`用来保存如词库等模型初始化所需的外部资源。本例没有用到外部资源，因此没有`assets`文件夹。
+
+#### 其他常用方法
 
 ##### MLP分类器
+
 前文提到过，分类器还可以用NBOW+MLP（如图5所示）和CNN来实现。借助TensorLayer，我们可以很方便地重组网络。下面简单介绍这两种网络的结构及其实现。
 
 由于词向量之间存在着线性平移的关系，如果相似词空间距离相近，那么在仅仅将文本中一个或几个词改成近义词的情况下，两个文本的词向量线性相加的结果也应该是非常接近的。
@@ -114,346 +431,3 @@ def get_model(inputs_shape, keep=0.5):
     model = tl.models.Model(inputs=ni, outputs=nn, name='cnn')
     return model
 ```
-
-
-#### 训练分类器
-
-首先加载数据，通过`sklearn`库的`train_test_split`方法将样本按照要求的比例切分成训练集和测试集。
-
-```python
-def load_dataset(files, test_size=0.2):
-    """加载样本并取test_size的比例做测试集
-    Args:
-        files: 样本文件目录集合
-            样本文件是包含了样本特征向量与标签的npy文件
-        test_size: float
-            0.0到1.0之间，代表数据集中有多少比例抽做测试集
-    Returns:
-        X_train, y_train: 训练集特征列表和标签列表
-        X_test, y_test: 测试集特征列表和标签列表
-    """
-    x = []
-    y = []
-    for file in files:
-        data = np.load(file, allow_pickle=True)
-        if x == [] or y == []:
-            x = data['x']
-            y = data['y']
-        else:
-            x = np.append(x, data['x'], axis=0)
-            y = np.append(y, data['y'], axis=0)
-
-    x_train, x_test, y_train, y_test = train_test_split(x, y, test_size=test_size)
-    return x_train, y_train, x_test, y_test
-
-```
-
-例子中每一次迭代，我们给网络输入128条文本序列。根据预测结果与标签的差异，网络不断优化权重，减小损失，逐步提高分类的准确性。
-
-```python
-def train(model):
-    """训练网络
-    Args:
-        model: 分类器模型
-    """
-    learning_rate = 0.005
-    n_epoch = 100
-    batch_size = 128
-    display_step = 10
-    loss_vals = []
-    acc_vals = []
-    optimizer = tf.optimizers.Adam(learning_rate=learning_rate)
-
-    logging.info("batch_size: %d", batch_size)
-    logging.info("Start training the network...")
-
-    for epoch in range(n_epoch):
-        step = 0
-        total_step = math.ceil(len(x_train) / batch_size)
-
-        # 利用训练集训练
-        model.train()
-        for batch_x, batch_y in tl.iterate.minibatches(x_train, y_train, batch_size, shuffle=True):
-
-            start_time = time.time()
-            batch_y = batch_y.astype(np.int32)
-            for i, d in enumerate(batch_x):
-                batch_x[i] = batch_x[i][:max_seq_len]
-                batch_x[i] += [tf.convert_to_tensor(np.zeros(200), dtype=tf.float32) for i in
-                               range(max_seq_len - len(d))]
-                batch_x[i] = tf.convert_to_tensor(batch_x[i], dtype=tf.float32)
-            batch_x = list(batch_x)
-            batch_x = tf.convert_to_tensor(batch_x, dtype=tf.float32)
-
-            with tf.GradientTape() as tape:
-                _y = model(batch_x)
-                loss_val = tf.nn.sparse_softmax_cross_entropy_with_logits(batch_y, _y, name='train_loss')
-                loss_val = tf.reduce_mean(loss_val)
-            grad = tape.gradient(loss_val, model.trainable_weights)
-            optimizer.apply_gradients(zip(grad, model.trainable_weights))
-
-            loss_vals.append(loss_val)
-            acc_vals.append(accuracy(_y, batch_y))
-
-            if step + 1 == 1 or (step + 1) % display_step == 0:
-                logging.info("Epoch {}/{},Step {}/{}, took {}".format(epoch + 1, n_epoch, step, total_step,
-                                                                      time.time() - start_time))
-                loss = sum(loss_vals) / len(loss_vals)
-                acc = sum(acc_vals) / len(acc_vals)
-                del loss_vals[:]
-                del acc_vals[:]
-                logging.info("Minibatch Loss= " + "{:.6f}".format(loss) + ", Training Accuracy= " + "{:.5f}".format(acc))
-            step += 1
-
-        # 利用测试集评估
-        model.eval()
-        test_loss, test_acc, n_iter = 0, 0, 0
-        for batch_x, batch_y in tl.iterate.minibatches(x_test, y_test, batch_size, shuffle=True):
-            batch_y = batch_y.astype(np.int32)
-            for i, d in enumerate(batch_x):
-                batch_x[i] = batch_x[i][:max_seq_len]
-                batch_x[i] += [tf.convert_to_tensor(np.zeros(200), dtype=tf.float32) for i in
-                               range(max_seq_len - len(d))]
-                batch_x[i] = tf.convert_to_tensor(batch_x[i], dtype=tf.float32)
-            # ValueError: setting an array element with a sequence.
-            batch_x = list(batch_x)
-            batch_x = tf.convert_to_tensor(batch_x, dtype=tf.float32)
-
-            _y = model(batch_x)
-
-            loss_val = tf.nn.sparse_softmax_cross_entropy_with_logits(batch_y, _y, name='test_loss')
-            loss_val = tf.reduce_mean(loss_val)
-
-            test_loss += loss_val
-            test_acc += accuracy(_y, batch_y)
-            n_iter += 1
-        logging.info("   test loss: {}".format(test_loss / n_iter))
-        logging.info("   test acc:  {}".format(test_acc / n_iter))
-```
-在训练和测试的过程中，调用accuracy函数来计算分类的准确度
-```python
-def accuracy(y_pred, y_true):
-    """计算预测精准度accuracy
-    Args:
-        y_pred: 预测值
-        y_true: 真实值
-    Returns:
-        准确度
-    """
-    # Predicted class is the index of highest score in prediction vector (i.e. argmax).
-    correct_prediction = tf.equal(tf.argmax(y_pred, 1), tf.cast(y_true, tf.int64))
-    return tf.reduce_mean(tf.cast(correct_prediction, tf.float32), axis=-1)
-```
-我们在训练过程中使用TensorBoard将Loss和Accuracy的变化可视化。如图7所示，在100步后，训练集与测试集的准确率都从最开始的50%左右上升到了95%以上。
-
-<div align="center">
-<img src="../images/5-Loss_and_Accuracy-color.png">
-<br>
-<em align="center">图7 使用TensorBoard监控Loss和Accuracy</em>
-</div>
-
-#### 模型导出
-
-TensorFlow提供了SavedModel这一格式专门用于保存可在多平台部署的文件，然而在TensorFlow2这一版本中，用于保存SavedModel的方法`tf.saved_model.save`仅支持对Trackable对象的模型导出。由于Trackable在Tensorflow2中是keras.model的父类，而TensorLayer构建的model不继承Trackable类，因此我们构建的model无法用`tf.saved_model.save`导出可部署文件。
-
-在这里，我们的解决思路是先将TensorLayer模型保存为hdf5文件，再设计一套转译机制，将该hdf5文件转成tf.keras可以读取的形式，然后再由`tf.saved_model.save`方法进行模型导出。
-
-hdf5文件从TensorLayer到keras的转译，被分为weights和config两部分。
-```python
-def translator_tl2_keras_h5(_tl_h5_path, _keras_h5_path):
-    f_tl_ = h5py.File(_tl_h5_path, 'r+')
-    f_k_ = h5py.File(_keras_h5_path, 'a')
-    f_k_.clear()
-    weights_translator(f_tl_, f_k_)
-    config_translator(f_tl_, f_k_)
-    f_tl_.close()
-    f_k_.close()
-```
-weights_translator将训练过程中学习到的权重(例如bias和kernel)进行转译。
-```python
-def weights_translator(f_tl, f_k):
-    # todo: delete inputlayer
-    if 'model_weights' not in f_k.keys():
-        f_k_model_weights = f_k.create_group('model_weights')
-    else:
-        f_k_model_weights = f_k['model_weights']
-    for key in f_tl.keys():
-        if key not in f_k_model_weights.keys():
-            f_k_model_weights.create_group(key)
-        try:
-            f_tl_para = f_tl[key][key]
-        except KeyError:
-            pass
-        else:
-            if key not in f_k_model_weights[key].keys():
-                f_k_model_weights[key].create_group(key)
-            weight_names = []
-            f_k_para = f_k_model_weights[key][key]
-            cell_name = ''
-            if key == 'rnn_1':
-                cell_name = 'lstm_cell'
-                f_k_para.create_group(cell_name)
-                f_k_para = f_k_para[cell_name]
-                f_k_model_weights.create_group('masking')
-                f_k_model_weights['masking'].attrs['weight_names'] = []
-            for k in f_tl_para:
-                if k == 'biases:0' or k == 'bias:0':
-                    weight_name = 'bias:0'
-                elif k == 'filters:0' or k == 'weights:0' or k == 'kernel:0':
-                    weight_name = 'kernel:0'
-                elif k == 'recurrent_kernel:0':
-                    weight_name = 'recurrent_kernel:0'
-                else:
-                    raise Exception("cant find the parameter '{}' in tensorlayer".format(k))
-                if weight_name in f_k_para:
-                    del f_k_para[weight_name]
-                f_k_para.create_dataset(name=weight_name, data=f_tl_para[k][:],
-                                                           shape=f_tl_para[k].shape)
-                # todo：对RNN层的weights进行通用适配
-                if key == 'rnn_1':
-                    weight_names.append('{}/{}/{}'.format(key, cell_name, weight_name).encode('utf8'))
-                else:
-                    weight_names.append('{}/{}'.format(key, weight_name).encode('utf8'))
-
-            weight_names.reverse()  # todo: 临时解决了参数顺序和keras不一致的问题
-            f_k_model_weights[key].attrs['weight_names'] = weight_names
-    f_k_model_weights.attrs['backend'] = keras.backend.backend().encode('utf8')
-    f_k_model_weights.attrs['keras_version'] = str(keras.__version__).encode('utf8')
-    f_k_model_weights.attrs['layer_names'] = [key.encode('utf8') for key in f_tl.keys()]
-```
-config_translator转译了模型的config信息，包括了模型的结构，和训练过程中的loss，metrics，optimizer等信息。
-```PYTHON
-def config_translator(f_tl, f_k):
-    tl_model_config = f_tl.attrs['model_config'].decode('utf8')
-    tl_model_config = eval(tl_model_config)
-    tl_model_architecture = tl_model_config['model_architecture']
-
-    k_layers = []
-    for key, tl_layer in enumerate(tl_model_architecture):
-        if key == 1:
-            k_layer = layer_translator(tl_layer, is_first_layer=True)
-        else:
-            k_layer = layer_translator(tl_layer)
-        if k_layer is not None:
-            k_layers.append(k_layer)
-    f_k.attrs['model_config'] = json.dumps({'class_name': 'Sequential',
-                                            'config': {'name': 'sequential', 'layers': k_layers},
-                                            'build_input_shape': input_shape},
-                                           default=serialization.get_json_type).encode('utf8')
-    f_k.attrs['backend'] = keras.backend.backend().encode('utf8')
-    f_k.attrs['keras_version'] = str(keras.__version__).encode('utf8')
-
-    # todo: translate the 'training_config'
-    training_config = {'loss': {'class_name': 'SparseCategoricalCrossentropy',
-                                'config': {'reduction': 'auto', 'name': 'sparse_categorical_crossentropy',
-                                           'from_logits': False}},
-                       'metrics': ['accuracy'], 'weighted_metrics': None, 'loss_weights': None, 'sample_weight_mode': None,
-                       'optimizer_config': {'class_name': 'Adam',
-                                            'config': {'name': 'Adam', 'learning_rate': 0.01, 'decay': 0.0,
-                                                       'beta_1': 0.9, 'beta_2': 0.999, 'epsilon': 1e-07, 'amsgrad': False
-                                                       }
-                                            }
-                       }
-
-    f_k.attrs['training_config'] = json.dumps(training_config, default=serialization.get_json_type).encode('utf8')
-```
-TensorLayer和keras的模型在保存config时，都是以layer为单位分别保存，于是在translate时，我们按照每个层的类型进行逐层转译。
-```PYTHON
-def layer_translator(tl_layer, is_first_layer=False):
-    _input_shape = None
-    global input_shape
-    if is_first_layer:
-        _input_shape = input_shape
-    if tl_layer['class'] == '_InputLayer':
-        input_shape = tl_layer['args']['shape']
-    elif tl_layer['class'] == 'Conv1d':
-        return layer_conv1d_translator(tl_layer, _input_shape)
-    elif tl_layer['class'] == 'MaxPool1d':
-        return layer_maxpooling1d_translator(tl_layer, _input_shape)
-    elif tl_layer['class'] == 'Flatten':
-        return layer_flatten_translator(tl_layer, _input_shape)
-    elif tl_layer['class'] == 'Dropout':
-        return layer_dropout_translator(tl_layer, _input_shape)
-    elif tl_layer['class'] == 'Dense':
-        return layer_dense_translator(tl_layer, _input_shape)
-    elif tl_layer['class'] == 'RNN':
-        return layer_rnn_translator(tl_layer, _input_shape)
-    return None
-```
-以rnn层为例，我们设计了其config的转译方法。
-```PYTHON
-def layer_rnn_translator(tl_layer, _input_shape=None):
-    args = tl_layer['args']
-    name = args['name']
-    cell = args['cell']
-    config = {'name': name, 'trainable': True, 'dtype': 'float32', 'return_sequences': False,
-              'return_state': False, 'go_backwards': False, 'stateful': False, 'unroll': False, 'time_major': False,
-              'cell': cell
-              }
-    if _input_shape is not None:
-        config['batch_input_shape'] = _input_shape
-    result = {'class_name': 'RNN', 'config': config}
-    return result
-```
-按照main函数的顺序，分类器完成了训练和导出模型的全部步骤。
-```python
-if __name__ == '__main__':
-
-    # 定义log格式
-    fmt = "%(asctime)s %(levelname)s %(message)s"
-    logging.basicConfig(format=fmt, level=logging.INFO)
-
-    # 加载数据
-    x_train, y_train, x_test, y_test = load_dataset(
-        ["../word2vec/output/sample_seq_pass.npz",
-         "../word2vec/output/sample_seq_spam.npz"])
-
-    # 构建模型
-    model = get_model(inputs_shape=[None, 20, 200])
-
-    # 开始训练
-    train(model)
-    logging.info("Optimization Finished!")
-
-    # h5保存和转译
-    model_dir = './model_h5'
-    if not os.path.exists(model_dir):
-        os.mkdir(model_dir)
-    tl_h5_path = model_dir + '/model_cnn_tl.hdf5'
-    keras_h5_path = model_dir + '/model_cnn_tl2k.hdf5'
-    tl.files.save_hdf5_graph(network=model, filepath=tl_h5_path, save_weights=True)
-    translator_tl2_keras_h5(tl_h5_path, keras_h5_path)
-
-    # 读取模型
-    new_model = keras.models.load_model(keras_h5_path)
-    x_test, y_test = format_convert(x_test, y_test)
-    score = new_model.evaluate(x_test, y_test, batch_size=128)
-
-    # 保存SavedModel可部署文件
-    saved_model_version = 1
-    saved_model_path = "./saved_models/cnn/"
-    tf.saved_model.save(new_model, saved_model_path + str(saved_model_version))
-```
-最终我们将在`./saved_models/rnn`目录下看到导出模型的每个版本，实例中`model_version`被设置为1，因此创建了相应的子目录`./saved_models/rnn/1`。
-
-SavedModel目录具有以下结构。
-
-```
-assets/
-variables/
-    variables.data-?????-of-?????
-    variables.index
-saved_model.pb
-```
-
-导出的模型在TensorFlow Serving中又被称为Servable，其中`saved_model.pb`保存了接口的数据交换格式，`variables`保存了模型的网络结构和参数，`assets`用来保存如词库等模型初始化所需的外部资源。本例没有用到外部资源，因此没有`assets`文件夹。
-
-
-
-
-
-
-
-
-
-
