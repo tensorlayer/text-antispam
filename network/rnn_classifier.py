@@ -13,10 +13,6 @@ from tensorflow.keras.callbacks import TensorBoard
 import tensorflow.keras as keras
 import datetime
 
-# import the modified recurrent file to set up RNN
-# uncomment the code below if you want to apply TL official recurrent module
-import recurrent_mod as rm
-
 
 def load_dataset(files, test_size=0.2):
     """加载样本并取test_size的比例做测试集
@@ -52,17 +48,10 @@ def get_model(inputs_shape):
         model: 定义好的模型
     """
     ni = tl.layers.Input(inputs_shape, name='input_layer')
-    # out = tl.layers.RNN(cell=tf.keras.layers.LSTMCell(units=64, recurrent_dropout=0.2),
-    #                     return_last_output=True,
-    #                     return_last_state=False,
-    #                     return_seq_2d=True)(ni, sequence_length=tl.layers.retrieve_seq_length_op3(ni, pad_val=masking_val))
-
-    # 运用修改后的RNN.forward
-    out = rm.RNN(cell=tf.keras.layers.LSTMCell(units=64, recurrent_dropout=0.2),
-                 return_last_output=True,
-                 return_last_state=False,
-                 return_seq_2d=True)(ni, sequence_length=tl.layers.retrieve_seq_length_op3(ni, pad_val=masking_val))
-
+    out = tl.layers.RNN(cell=tf.keras.layers.LSTMCell(units=64, recurrent_dropout=0.2),
+                        return_last_output=True,
+                        return_last_state=False,
+                        return_seq_2d=True)(ni, sequence_length=tl.layers.retrieve_seq_length_op3(ni, pad_val=masking_val))
     nn = tl.layers.Dense(n_units=2, act=tf.nn.softmax, name="dense")(out)
     model = tl.models.Model(inputs=ni, outputs=nn, name='rnn')
     return model

@@ -61,13 +61,6 @@ def get_model(inputs_shape):
                         return_last_output=True,
                         return_last_state=False,
                         return_seq_2d=True)(ni, sequence_length=tl.layers.retrieve_seq_length_op3(ni, pad_val=masking_val))
-    
-    # 运用修改后的RNN.forward
-    # out = rm.RNN(cell=tf.keras.layers.LSTMCell(units=64, recurrent_dropout=0.2),
-                 # return_last_output=True,
-                 # return_last_state=False,
-                 # return_seq_2d=True)(ni, sequence_length=tl.layers.retrieve_seq_length_op3(ni, pad_val=masking_val))
-
     nn = tl.layers.Dense(n_units=2, act=tf.nn.softmax, name="dense")(out)
     model = tl.models.Model(inputs=ni, outputs=nn, name='rnn')
     return model
