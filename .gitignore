@@ -99,3 +99,4 @@ data/
 network/model_h5
 network/saved_models
 network/logs
+word2vec/output
