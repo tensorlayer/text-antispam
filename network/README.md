@@ -15,7 +15,7 @@ python3 mlp_classifier.py
 ```
 python3 cnn_classifier.py
 ```
-#### RNN模型构建
+#### 模型构建
 ##### 训练分类器
 我们使用Dynamic RNN实现不定长文本序列分类。首先加载数据，通过`sklearn`库的`train_test_split`方法将样本按照要求的比例切分成训练集和测试集。
 
@@ -46,22 +46,29 @@ def load_dataset(files, test_size=0.2):
     return x_train, y_train, x_test, y_test
 ```
 
-为了防止过拟合，我们对DynamicRNNLayer的输入与输出都做了Dropout操作。参数`keep`决定了输入或输出的保留比例。通过配置`keep`参数我们可以在训练的时候打开Dropout，在服务的时候关闭它。TensorFlow的`tf.nn.dropout`操作会根据`keep`值自动调整激活的神经元的输出权重，使得我们无须在`keep`改变时手动调节输出权重。
+为了防止过拟合，我们对Dynamic RNN的隐藏层做了Dropout操作。参数`recurrent_dropout`决定了隐藏层的舍弃比例。通过配置`recurrent_dropout`参数我们可以在训练的时候打开Dropout，在服务的时候关闭它。需要特别注意的是，我们在RNN层传入了`sequence length`来表示每个输入文本的长度。根据Tensorlayer官方文档，只有提供了`sequence length` RNN才是一个Dynamic RNN。计算`sequence length`的方程`retrieve_seq_length_op3`需要指定padding值，在该项目中是维度为200的全零矩阵。
 
 ```python
 def get_model(inputs_shape):
-    """定义网络结构
-    Args:
+    """定义网络结Args:
         inputs_shape: 输入数据的shape
-        keep: 各层神经元激活比例
-            keep=1.0: 关闭Dropout
+        recurrent_dropout: RNN隐藏层的舍弃比重
     Returns:
         model: 定义好的模型
     """
     ni = tl.layers.Input(inputs_shape, name='input_layer')
-    out = tl.layers.RNN(cell=tf.keras.layers.LSTMCell(units=64, recurrent_dropout=0.2), return_last_output=True, return_last_state=False, return_seq_2d=True)(ni, sequence_length=tl.layers.retrieve_seq_length_op3(ni, pad_val=masking_val))
-    nn = tl.layers.Dense(n_units=2, act=tf.nn.softmax, name="dense")(out)
+    out = tl.layers.RNN(cell=tf.keras.layers.LSTMCell(units=64, recurrent_dropout=0.2),
+                        return_last_output=True,
+                        return_last_state=False,
+                        return_seq_2d=True)(ni, sequence_length=tl.layers.retrieve_seq_length_op3(ni, pad_val=masking_val))
+    
+    # 运用修改后的RNN.forward
+    # out = rm.RNN(cell=tf.keras.layers.LSTMCell(units=64, recurrent_dropout=0.2),
+                 # return_last_output=True,
+                 # return_last_state=False,
+                 # return_seq_2d=True)(ni, sequence_length=tl.layers.retrieve_seq_length_op3(ni, pad_val=masking_val))
 
+    nn = tl.layers.Dense(n_units=2, act=tf.nn.softmax, name="dense")(out)
     model = tl.models.Model(inputs=ni, outputs=nn, name='rnn')
     return model
 ```
@@ -122,6 +129,10 @@ def train(model):
                     "Minibatch Loss= " + "{:.6f}".format(loss) + ", Training Accuracy= " + "{:.5f}".format(acc))
             step += 1
 
+        with train_summary_writer.as_default():
+            tf.summary.scalar('loss', loss_val.numpy(), step = epoch)
+            tf.summary.scalar('accuracy', accuracy(_y, batch_y).numpy(), step = epoch)
+
         # 利用测试集评估
         model.eval()
         test_loss, test_acc, n_iter = 0, 0, 0
@@ -129,6 +140,7 @@ def train(model):
             batch_y = batch_y.astype(np.int32)
             max_seq_len = max([len(d) for d in batch_x])
             for i, d in enumerate(batch_x):
+                # 依照每个batch中最大样本长度将剩余样本打上padding
                 batch_x[i] += [tf.convert_to_tensor(np.zeros(200), dtype=tf.float32) for i in
                                range(max_seq_len - len(d))]
                 batch_x[i] = tf.convert_to_tensor(batch_x[i], dtype=tf.float32)
@@ -144,17 +156,23 @@ def train(model):
             test_loss += loss_val
             test_acc += accuracy(_y, batch_y)
             n_iter += 1
+
+        with test_summary_writer.as_default():
+            tf.summary.scalar('loss', loss_val.numpy(), step=epoch)
+            tf.summary.scalar('accuracy', accuracy(_y, batch_y).numpy(), step=epoch)
+
         logging.info("   test loss: {}".format(test_loss / n_iter))
         logging.info("   test acc:  {}".format(test_acc / n_iter))
 ```
 
-在模型训练到16个epoch之后，训练集与测试集的准确率都从最开始的50%左右上升到了95%以上。
+在模型训练到35个epoch之后，训练集与测试集的准确率都上升到了95%以上。
 
 <div align="center">
-<img src="../images/12-RNN-Train-Result.png">
+<img src="../images/13-Loss_and_Accuracy-color_new.png">
 <br>
-<em align="center">图5 NBOW+MLP分类器</em>
+<em align="center">图4 Dynamic RNN Loss and Accuracy</em>
 </div>
+
 
 ##### 模型导出
 
@@ -196,6 +214,7 @@ def weights_translator(f_tl, f_k):
                 f_k_model_weights[key].create_group(key)
             weight_names = []
             f_k_para = f_k_model_weights[key][key]
+            # todo：对RNN层的weights进行通用适配
             cell_name = ''
             if key == 'rnn_1':
                 cell_name = 'lstm_cell'
@@ -216,17 +235,30 @@ def weights_translator(f_tl, f_k):
                     del f_k_para[weight_name]
                 f_k_para.create_dataset(name=weight_name, data=f_tl_para[k][:],
                                                            shape=f_tl_para[k].shape)
-                # todo：对RNN层的weights进行通用适配
-                if key == 'rnn_1':
-                    weight_names.append('{}/{}/{}'.format(key, cell_name, weight_name).encode('utf8'))
-                else:
-                    weight_names.append('{}/{}'.format(key, weight_name).encode('utf8'))
 
-            weight_names.reverse()  # todo: 临时解决了参数顺序和keras不一致的问题
-            f_k_model_weights[key].attrs['weight_names'] = weight_names
+        weight_names = []
+        for weight_name in f_tl[key].attrs['weight_names']:
+            weight_name = weight_name.decode('utf8')
+            weight_name = weight_name.split('/')
+            k = weight_name[-1]
+            if k == 'biases:0' or k == 'bias:0':
+                weight_name[-1] = 'bias:0'
+            elif k == 'filters:0' or k == 'weights:0' or k == 'kernel:0':
+                weight_name[-1] = 'kernel:0'
+            elif k == 'recurrent_kernel:0':
+                weight_name[-1] = 'recurrent_kernel:0'
+            else:
+                raise Exception("cant find the parameter '{}' in tensorlayer".format(k))
+            if key == 'rnn_1':
+                weight_name.insert(-1, 'lstm_cell')
+            weight_name = '/'.join(weight_name)
+            weight_names.append(weight_name.encode('utf8'))
+        f_k_model_weights[key].attrs['weight_names'] = weight_names
+
     f_k_model_weights.attrs['backend'] = keras.backend.backend().encode('utf8')
     f_k_model_weights.attrs['keras_version'] = str(keras.__version__).encode('utf8')
-    f_k_model_weights.attrs['layer_names'] = [key.encode('utf8') for key in f_tl.keys()]
+
+    f_k_model_weights.attrs['layer_names'] = [i for i in f_tl.attrs['layer_names']]
 ```
 
 config_translator转译了模型的config信息，包括了模型的结构，和训练过程中的loss，metrics，optimizer等信息。
@@ -314,6 +346,11 @@ def layer_rnn_translator(tl_layer, _input_shape=None):
 ```python
 if __name__ == '__main__':
 
+    masking_val = np.zeros(200)
+    input_shape = None
+    gradient_log_dir = 'logs/gradient_tape/'
+    tensorboard = TensorBoard(log_dir = gradient_log_dir)
+
     # 定义log格式
     fmt = "%(asctime)s %(levelname)s %(message)s"
     logging.basicConfig(format=fmt, level=logging.INFO)
@@ -324,18 +361,29 @@ if __name__ == '__main__':
          "../word2vec/output/sample_seq_spam.npz"])
 
     # 构建模型
-    model = get_model(inputs_shape=[None, 20, 200])
+    model = get_model(inputs_shape=[None, None, 200])
 
-    # 开始训练
+    for index, layer in enumerate(model.config['model_architecture']):
+        if layer['class'] == 'RNN':
+            if 'cell' in layer['args']:
+                model.config['model_architecture'][index]['args']['cell'] = ''
+
+    current_time = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
+    train_log_dir = gradient_log_dir + current_time + '/train'
+    test_log_dir = gradient_log_dir + current_time + '/test'
+    train_summary_writer = tf.summary.create_file_writer(train_log_dir)
+    test_summary_writer = tf.summary.create_file_writer(test_log_dir)
+
     train(model)
+
     logging.info("Optimization Finished!")
 
     # h5保存和转译
     model_dir = './model_h5'
     if not os.path.exists(model_dir):
         os.mkdir(model_dir)
-    tl_h5_path = model_dir + '/model_cnn_tl.hdf5'
-    keras_h5_path = model_dir + '/model_cnn_tl2k.hdf5'
+    tl_h5_path = model_dir + '/model_rnn_tl.hdf5'
+    keras_h5_path = model_dir + '/model_rnn_tl2k.hdf5'
     tl.files.save_hdf5_graph(network=model, filepath=tl_h5_path, save_weights=True)
     translator_tl2_keras_h5(tl_h5_path, keras_h5_path)
 
@@ -346,7 +394,7 @@ if __name__ == '__main__':
 
     # 保存SavedModel可部署文件
     saved_model_version = 1
-    saved_model_path = "./saved_models/cnn/"
+    saved_model_path = "./saved_models/rnn/"
     tf.saved_model.save(new_model, saved_model_path + str(saved_model_version))
 ```
 
