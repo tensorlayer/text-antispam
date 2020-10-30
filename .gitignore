@@ -96,3 +96,7 @@ rnn_checkpoint/
 mlp_checkpoint/
 output/
 data/
+network/model_h5
+network/saved_models
+network/logs
+word2vec/output
