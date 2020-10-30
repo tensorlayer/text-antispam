@@ -161,10 +161,11 @@ def train(model):
 在模型训练到35个epoch之后，训练集与测试集的准确率都上升到了95%以上。
 
 <div align="center">
-<img src="../images/13-Loss_and_Accuracy-color_new.png">
+<img src="../images/5-Loss_and_Accuracy-color.png">
 <br>
 <em align="center">图4 Dynamic RNN Loss and Accuracy</em>
 </div>
+
 
 
 ##### 模型导出
