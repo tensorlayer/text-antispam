@@ -158,7 +158,7 @@ def train(model):
         logging.info("   test acc:  {}".format(test_acc / n_iter))
 ```
 
-在模型训练到35个epoch之后，训练集与测试集的准确率都上升到了95%以上。
+在模型训练到60个epoch之后，训练集与测试集的准确率都上升到了95%以上。
 
 <div align="center">
 <img src="../images/5-Loss_and_Accuracy-color.png">
