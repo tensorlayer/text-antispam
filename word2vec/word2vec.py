@@ -25,7 +25,7 @@ def load_dataset():
     Returns:
         [得 我 就 在 车里 咪 一会 终于 知道 哪里 感觉 不 对 了...]
     """
-    prj = "https://github.com/pakrchen/text-antispam"
+    prj = "https://github.com/tensorlayer/text-antispam"
     if not os.path.exists('data/msglog'):
         tl.files.maybe_download_and_extract(
             'msglog.tar.gz',

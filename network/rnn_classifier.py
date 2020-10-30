@@ -9,10 +9,9 @@ from sklearn.model_selection import train_test_split
 import h5py
 import json
 from tensorflow.python.util import serialization
+from tensorflow.keras.callbacks import TensorBoard
 import tensorflow.keras as keras
-
-masking_val = np.zeros(200)
-input_shape = None
+import datetime
 
 
 def load_dataset(files, test_size=0.2):
@@ -44,15 +43,19 @@ def load_dataset(files, test_size=0.2):
 def get_model(inputs_shape):
     """定义网络结Args:
         inputs_shape: 输入数据的shape
+        recurrent_dropout: RNN隐藏层的舍弃比重
     Returns:
         model: 定义好的模型
     """
     ni = tl.layers.Input(inputs_shape, name='input_layer')
-    out = tl.layers.RNN(cell=tf.keras.layers.LSTMCell(units=64, recurrent_dropout=0.2), return_last_output=True, return_last_state=False, return_seq_2d=True)(ni, sequence_length=tl.layers.retrieve_seq_length_op3(ni, pad_val=masking_val))
+    out = tl.layers.RNN(cell=tf.keras.layers.LSTMCell(units=64, recurrent_dropout=0.2),
+                        return_last_output=True,
+                        return_last_state=False,
+                        return_seq_2d=True)(ni, sequence_length=tl.layers.retrieve_seq_length_op3(ni, pad_val=masking_val))
     nn = tl.layers.Dense(n_units=2, act=tf.nn.softmax, name="dense")(out)
-
     model = tl.models.Model(inputs=ni, outputs=nn, name='rnn')
     return model
+
 
 
 def accuracy(y_pred, y_true):
@@ -121,6 +124,10 @@ def train(model):
                     "Minibatch Loss= " + "{:.6f}".format(loss) + ", Training Accuracy= " + "{:.5f}".format(acc))
             step += 1
 
+        with train_summary_writer.as_default():
+            tf.summary.scalar('loss', loss_val.numpy(), step = epoch)
+            tf.summary.scalar('accuracy', accuracy(_y, batch_y).numpy(), step = epoch)
+
         # 利用测试集评估
         model.eval()
         test_loss, test_acc, n_iter = 0, 0, 0
@@ -128,6 +135,7 @@ def train(model):
             batch_y = batch_y.astype(np.int32)
             max_seq_len = max([len(d) for d in batch_x])
             for i, d in enumerate(batch_x):
+                # 依照每个batch中最大样本长度将剩余样本打上padding
                 batch_x[i] += [tf.convert_to_tensor(np.zeros(200), dtype=tf.float32) for i in
                                range(max_seq_len - len(d))]
                 batch_x[i] = tf.convert_to_tensor(batch_x[i], dtype=tf.float32)
@@ -143,6 +151,11 @@ def train(model):
             test_loss += loss_val
             test_acc += accuracy(_y, batch_y)
             n_iter += 1
+
+        with test_summary_writer.as_default():
+            tf.summary.scalar('loss', loss_val.numpy(), step=epoch)
+            tf.summary.scalar('accuracy', accuracy(_y, batch_y).numpy(), step=epoch)
+
         logging.info("   test loss: {}".format(test_loss / n_iter))
         logging.info("   test acc:  {}".format(test_acc / n_iter))
 
@@ -400,6 +413,12 @@ def format_convert(x, y):
 
 
 if __name__ == '__main__':
+
+    masking_val = np.zeros(200)
+    input_shape = None
+    gradient_log_dir = 'logs/gradient_tape/'
+    tensorboard = TensorBoard(log_dir = gradient_log_dir)
+
     # 定义log格式
     fmt = "%(asctime)s %(levelname)s %(message)s"
     logging.basicConfig(format=fmt, level=logging.INFO)
@@ -416,7 +435,15 @@ if __name__ == '__main__':
         if layer['class'] == 'RNN':
             if 'cell' in layer['args']:
                 model.config['model_architecture'][index]['args']['cell'] = ''
+
+    current_time = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
+    train_log_dir = gradient_log_dir + current_time + '/train'
+    test_log_dir = gradient_log_dir + current_time + '/test'
+    train_summary_writer = tf.summary.create_file_writer(train_log_dir)
+    test_summary_writer = tf.summary.create_file_writer(test_log_dir)
+
     train(model)
+
     logging.info("Optimization Finished!")
 
     # h5保存和转译
