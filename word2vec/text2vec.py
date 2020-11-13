@@ -9,7 +9,9 @@
 
 import numpy as np
 import tensorlayer as tl
-
+import sys
+sys.path.append("../serving/packages")
+from text_regularization import extractWords
 
 wv = tl.files.load_npy_to_any(name='./output/model_word2vec_200.npy')
 for label in ["pass", "spam"]:
@@ -18,6 +20,7 @@ for label in ["pass", "spam"]:
     outp = "output/sample_" + label
     f = open(inp, encoding='utf-8')
     for line in f:
+        line = extractWords(line)
         words = line.strip().split(' ')
         text_embedding = np.zeros(200)
         for word in words:
