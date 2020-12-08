@@ -198,8 +198,8 @@ def extractWords(text):
     pattern = re.compile(r"[0-9A-Za-z\u4E00-\u9FFF]+")
     match = pattern.findall(text)
     if match:
-        text = "".join(match)
+        text = " ".join(match)
     else:
-        text = ""
+        text = " "
 
     return text
