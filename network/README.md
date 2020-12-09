@@ -255,7 +255,7 @@ def weights_translator(f_tl, f_k):
     f_k_model_weights.attrs['layer_names'] = [i for i in f_tl.attrs['layer_names']]
 ```
 
-config_translator转译了模型的config信息，包括了模型的结构，和训练过程中的loss，metrics，optimizer等信息。
+config_translator转译了模型的config信息，包括了模型的结构，和训练过程中的loss，metrics，optimizer等信息,同时传入了Masking层，保证dynamic RNN能够根据序列实际长度中止计算。
 
 ```PYTHON
 def config_translator(f_tl, f_k):
@@ -264,6 +264,17 @@ def config_translator(f_tl, f_k):
     tl_model_architecture = tl_model_config['model_architecture']
 
     k_layers = []
+    masking_layer = {
+        'class_name': 'Masking',
+        'config': {
+            'batch_input_shape': [None, None, 200],
+            'dtype': 'float32',
+            'mask_value': 0,  # Masks a sequence  to skip timesteps if values are equal to mask_value
+            'name': 'masking',
+            'trainable': True
+        }
+    }
+    k_layers.append(masking_layer)
     for key, tl_layer in enumerate(tl_model_architecture):
         if key == 1:
             k_layer = layer_translator(tl_layer, is_first_layer=True)
