@@ -3,7 +3,7 @@
 ### 注意事项：
 垃圾文本分类器所用到的tensorflow版本为2.2.0。
 
-tensorlayer请下载最新版本，建议从GitHub源码下载。
+需要[**TensorLayer2.0+**](https://github.com/tensorlayer/tensorlayer)版本，建议从GitHub源码下载。
 
 ---
 ### 任务场景
